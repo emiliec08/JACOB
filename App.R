@@ -12,6 +12,7 @@ library(leaflet)
 library(DT)
 library(shinyjs)
 library(stringr)
+source("R/format_table.R")
 
 # Charger les données
 Grand_lyon <- st_read(dsn="data/EPCI_GLyon4326.geojson")
@@ -35,43 +36,45 @@ ui <- fluidPage(
   titlePanel("Application d'analyse des jardins partagés"),
   tabsetPanel(
     tabPanel("Introduction",
-             sidebarLayout(
-               sidebarPanel(
+             fluidRow(
+               column(width=3,
+                 h5("Mode de gestion"),
                  checkboxInput("JARDIN_FAMILIAL_intro", "Jardin familial", value = TRUE),
                  checkboxInput("JARDIN_A_CLASSER_intro", "Jardin à classer", value = FALSE),
                  checkboxGroupInput("sub_filter_classes_intro", "Jardins partagés (Sous-catégories) :",
                                     choices = list(
-                                      "Ferme urbaine" = "FERME URBAINE",
-                                      "d'insertion" = "JARDIN D'INSERTION",
-                                      "de rue" = "JARDIN DE RUE",
                                       "partagé" = "JARDIN PARTAGÉ",
-                                      "pédagogique" = "JARDIN PÉDAGOGIQUE"
+                                      "pédagogique" = "JARDIN PÉDAGOGIQUE",
+                                      "de rue" = "JARDIN DE RUE",
+                                      "d'insertion" = "JARDIN D'INSERTION",
+                                      "Ferme urbaine" = "FERME URBAINE"
                                     ),
-                                    selected = c("FERME URBAINE", "JARDIN D'INSERTION", "JARDIN DE RUE", "JARDIN PARTAGÉ", "JARDIN PÉDAGOGIQUE"))
-               ),
-               mainPanel(
-                 leafletOutput("map_intro", height = "70vh"),
-                 dataTableOutput("table_intro")
-               )
-             )
+                                    selected = c("FERME URBAINE", "JARDIN D'INSERTION", "JARDIN DE RUE", "JARDIN PARTAGÉ", "JARDIN PÉDAGOGIQUE")),
+                 h5("Affichage"),
+                 checkboxInput("all_columns_1","Montrer toutes les variables dans la table", value=FALSE)
+               ),# end first column
+               column(width=9,
+                 leafletOutput("map_intro", height = "50vh")
+               )),# end second column and fluidRow
+               dataTableOutput("table_intro")
     ),
     tabPanel("Analyse Scraping",
-             sidebarLayout(
-               sidebarPanel(
-                 textInput("search_word", "Entrez un mot-clé à rechercher :", value = ""),
+             fluidRow(
+               column(width=4,
+                 textInput("search_word", "Entrez un mot-clé à rechercher :", value = "légume"),
                  textOutput("nb_jardins_concernes"),
                  br(),
                  h5("Top 20 des jardins (par nombre d’occurrences)"),
-                 plotOutput("plot_occurrences", height = "350px", click = "plot_click")
-               ),
-               mainPanel(
-                 leafletOutput("map_scraping", height = "60vh"),
-                 uiOutput("no_result_text"),
-                 dataTableOutput("table_scraping")
-               )
-             )
-    )
-  )
+                 plotOutput("plot_occurrences", height = "350px", click = "plot_click"),
+                 checkboxInput("all_columns_2","Montrer toutes les variables dans la table", value=FALSE)
+               ),#end first column
+               column(width=8,
+                 leafletOutput("map_scraping", height = "50vh"),
+                 uiOutput("no_result_text")
+             )),
+             dataTableOutput("table_scraping") # end second column and fluidRow
+  )#end tabPanel
+)
 )
 
 # Serveur
@@ -123,25 +126,35 @@ server <- function(input, output, session) {
   
   output$table_intro <- renderDataTable({
     bounds <- input$map_intro_bounds
-    data <- filter_data()
+    data <- filter_data() 
+    if(!input$all_columns_1){
+      data= data %>% 
+        dplyr::select(ID, name,source_layer, area_m2, classe_brute, classe_mot)
+    }
     if (is.null(bounds)) return(data[0, ])
     df <- data %>% filter(
       st_coordinates(st_centroid(geometry))[,1] >= bounds$west &
         st_coordinates(st_centroid(geometry))[,1] <= bounds$east &
         st_coordinates(st_centroid(geometry))[,2] >= bounds$south &
         st_coordinates(st_centroid(geometry))[,2] <= bounds$north)
-    datatable(st_set_geometry(df, NULL), options = list(scrollX = TRUE), width = "100%")
+    #datatable(st_set_geometry(df, NULL), options = list(scrollX = TRUE), width = "100%") %>% 
+      df %>% 
+        sf::st_drop_geometry() %>% 
+        format_table()
   })
   
   get_circle_data <- reactive({
     if (input$search_word == "") return(jardin_cercle[0, ])
     jardin_cercle %>%
-      mutate(occurrences = str_count(toupper(texte_nettoye), toupper(input$search_word))) %>%
-      filter(occurrences > 0)
+      mutate(occurrences = str_count(toupper(texte_nettoye),
+                                     toupper(input$search_word))) %>% 
+      dplyr::mutate(highlight=case_when(occurrences>0~"red",
+                                        TRUE~"grey"))
+                                     #paste0("\b",toupper(input$search_word),"\b"))) 
   })
   
   output$nb_jardins_concernes <- renderText({
-    nb <- nrow(get_circle_data())
+    nb <- nrow(get_circle_data() %>% filter(occurrences>0))
     if (input$search_word == "") return("")
     else if (nb == 0) return("Aucun jardin collectif concerné.")
     else if (nb == 1) return("Résultat : 1 jardin collectif est concerné.")
@@ -149,20 +162,21 @@ server <- function(input, output, session) {
   })
   
   output$map_scraping <- renderLeaflet({
+    filtered_data=get_circle_data()
     leaflet() %>%
-      addProviderTiles("CartoDB.Positron", options = providerTileOptions(opacity = 0.4)) %>%
-      addCircles(data = jardin_cercle,
+      addProviderTiles("CartoDB.Positron", options = providerTileOptions(opacity = 0.4)) %>% 
+      addCircles(data = filtered_data,
                  lat = ~st_coordinates(geometry)[,2],
                  lng = ~st_coordinates(geometry)[,1],
-                 radius = 6,
-                 color = "grey34",
-                 fillColor = "grey34",
+                 radius = ~occurrences * 10,
+                 color = ~ highlight,
+                 fillColor = ~ highlight,
                  fillOpacity = 0.5,
-                 popup = ~paste("<strong>", name, "</strong>", "<br>", "Type : ", classe_mot))
+                 popup = ~paste("<strong>", name, "</strong>", "<br>", "Occurrences : ", occurrences))
   })
   
   observe({
-    filtered_data <- get_circle_data()
+    filtered_data <- get_circle_data() 
     proxy <- leafletProxy("map_scraping") %>% clearShapes()
     
     if (nrow(filtered_data) > 0) {
@@ -171,8 +185,8 @@ server <- function(input, output, session) {
                            lat = ~st_coordinates(geometry)[,2],
                            lng = ~st_coordinates(geometry)[,1],
                            radius = ~occurrences * 10,
-                           color = "grey34",
-                           fillColor = "grey34",
+                           color = ~ highlight,
+                           fillColor = ~ highlight,
                            fillOpacity = 0.5,
                            popup = ~paste("<strong>", name, "</strong>", "<br>", "Occurrences : ", occurrences))
     } else {
@@ -210,14 +224,22 @@ server <- function(input, output, session) {
   
   output$table_scraping <- renderDataTable({
     bounds <- input$map_scraping_bounds
-    data <- get_circle_data()
+    # display all rows in bounding box where occurrences > 0
+    data <- get_circle_data() %>%
+      filter(occurrences > 0)
+    if(!input$all_columns_2){
+      data=data %>% 
+        dplyr::select(name,source_layer,texte_nettoye) 
+    }
     if (is.null(bounds)) return(data[0, ])
     df <- data %>% filter(
       st_coordinates(geometry)[,1] >= bounds$west &
         st_coordinates(geometry)[,1] <= bounds$east &
         st_coordinates(geometry)[,2] >= bounds$south &
         st_coordinates(geometry)[,2] <= bounds$north)
-    datatable(st_set_geometry(df, NULL), options = list(scrollX = TRUE), width = "100%")
+    df %>% 
+      sf::st_drop_geometry() %>% 
+      format_table()
   })
 }
 
