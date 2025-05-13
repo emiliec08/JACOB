@@ -6,8 +6,8 @@ library(dplyr)
 library(ggplot2)
 library(osmdata)
 library(sf)
-library(tmap)
-library(mapview)
+#library(tmap)
+#library(mapview)
 library(leaflet)
 library(DT)
 library(shinyjs)
@@ -32,16 +32,26 @@ layers_info <- list(
 )
 
 # UI
-ui <- fluidPage(
-  titlePanel("Application d'analyse des jardins partagés"),
-  tabsetPanel(
+ui <- navbarPage(
+  title="Ja🌿Co👥B📊",
+    # img(
+    #   src = "www/GloUrb_wide.png",
+    #   height = 35,
+    #   width = 100
+    # ),
     tabPanel("Introduction",
              fluidRow(
                column(width=3,
-                 h5("Mode de gestion"),
-                 checkboxInput("JARDIN_FAMILIAL_intro", "Jardin familial", value = TRUE),
-                 checkboxInput("JARDIN_A_CLASSER_intro", "Jardin à classer", value = FALSE),
-                 checkboxGroupInput("sub_filter_classes_intro", "Jardins partagés (Sous-catégories) :",
+                 checkboxGroupInput("modgest",
+                                    "Mode de gestion",
+                                    choices=c("Jardin à classer",
+                                              "Jardin familial",
+                                              "Jardin partagé"),
+                                    selected=c("Jardin familial",
+                                               "Jardin partagé")),  
+                 conditionalPanel(condition = "input.modgest.includes('Jardin partagé')",
+                 fluidRow(column(width=10,offset=1,
+                 checkboxGroupInput("sub_filter_classes_intro", "sous-catégories",
                                     choices = list(
                                       "partagé" = "JARDIN PARTAGÉ",
                                       "pédagogique" = "JARDIN PÉDAGOGIQUE",
@@ -49,7 +59,13 @@ ui <- fluidPage(
                                       "d'insertion" = "JARDIN D'INSERTION",
                                       "Ferme urbaine" = "FERME URBAINE"
                                     ),
-                                    selected = c("FERME URBAINE", "JARDIN D'INSERTION", "JARDIN DE RUE", "JARDIN PARTAGÉ", "JARDIN PÉDAGOGIQUE")),
+                                    selected = c("FERME URBAINE",
+                                                 "JARDIN D'INSERTION",
+                                                 "JARDIN DE RUE",
+                                                 "JARDIN PARTAGÉ",
+                                                 "JARDIN PÉDAGOGIQUE"))
+                 )),
+                 ),# end conditionalPanel
                  h5("Affichage"),
                  checkboxInput("all_columns_1","Montrer toutes les variables dans la table", value=FALSE)
                ),# end first column
@@ -74,19 +90,19 @@ ui <- fluidPage(
              )),
              dataTableOutput("table_scraping") # end second column and fluidRow
   )#end tabPanel
-)
+
 )
 
 # Serveur
 server <- function(input, output, session) {
   
-  pal <- colorFactor(palette = unname(unlist(layers_info)), domain = names(layers_info))
+  pal <- colorFactor(palette = unname(unlist(layers_info)),
+                     domain = names(layers_info))
   
   filter_data <- reactive({
-    selected_classes <- c()
-    if (input$JARDIN_FAMILIAL_intro) selected_classes <- c(selected_classes, "JARDIN FAMILIAL")
-    if (input$JARDIN_A_CLASSER_intro) selected_classes <- c(selected_classes, "JARDIN À CLASSER")
-    selected_classes <- c(selected_classes, input$sub_filter_classes_intro)
+    print(input$modgest)
+    selected_classes <- c(input$modgest, input$sub_filter_classes_intro)
+    print(selected_classes)
     jardin %>% filter(classe_mot %in% selected_classes)
   })
   
@@ -110,11 +126,7 @@ server <- function(input, output, session) {
   })
   
   observe({
-    selected_classes <- c()
-    if (input$JARDIN_FAMILIAL_intro) selected_classes <- c(selected_classes, "JARDIN FAMILIAL")
-    if (input$JARDIN_A_CLASSER_intro) selected_classes <- c(selected_classes, "JARDIN À CLASSER")
-    selected_classes <- c(selected_classes, input$sub_filter_classes_intro)
-    
+    selected_classes <- c(input$modgest, input$sub_filter_classes_intro)
     leafletProxy("map_intro") %>%
       clearControls() %>%
       addLegend(position = "bottomright",
@@ -126,6 +138,7 @@ server <- function(input, output, session) {
   
   output$table_intro <- renderDataTable({
     bounds <- input$map_intro_bounds
+    selected_classes <- c(input$modgest, input$sub_filter_classes_intro)
     data <- filter_data() 
     if(!input$all_columns_1){
       data= data %>% 
