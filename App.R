@@ -1,5 +1,5 @@
 # -- Application Shiny : Onglets avec cartes, histogramme et légende dynamique
-
+options("shiny.port" = 3841, "shiny.host" = "0.0.0.0", "golem.app.prod" = TRUE)
 # installation des librairies nécessaires
 library(shiny)
 library(dplyr)
@@ -13,7 +13,7 @@ library(DT)
 library(shinyjs)
 library(stringr)
 source("R/format_table.R")
-
+source("R/connect_to_jacob.R")
 # Charger les données
 Grand_lyon <- st_read(dsn="data/EPCI_GLyon4326.geojson")
 jardin <- st_read(dsn="data/jardin_collectif_text.geojson")
@@ -34,63 +34,63 @@ layers_info <- list(
 # UI
 ui <- navbarPage(
   title="Ja🌿Co👥B📊",
-    # img(
-    #   src = "www/GloUrb_wide.png",
-    #   height = 35,
-    #   width = 100
-    # ),
-    tabPanel("Introduction",
-             fluidRow(
-               column(width=3,
-                 checkboxGroupInput("modgest",
-                                    "Mode de gestion",
-                                    choices=c("Jardin à classer",
-                                              "Jardin familial",
-                                              "Jardin partagé"),
-                                    selected=c("Jardin familial",
-                                               "Jardin partagé")),  
-                 conditionalPanel(condition = "input.modgest.includes('Jardin partagé')",
-                 fluidRow(column(width=10,offset=1,
-                 checkboxGroupInput("sub_filter_classes_intro", "sous-catégories",
-                                    choices = list(
-                                      "partagé" = "JARDIN PARTAGÉ",
-                                      "pédagogique" = "JARDIN PÉDAGOGIQUE",
-                                      "de rue" = "JARDIN DE RUE",
-                                      "d'insertion" = "JARDIN D'INSERTION",
-                                      "Ferme urbaine" = "FERME URBAINE"
-                                    ),
-                                    selected = c("FERME URBAINE",
-                                                 "JARDIN D'INSERTION",
-                                                 "JARDIN DE RUE",
-                                                 "JARDIN PARTAGÉ",
-                                                 "JARDIN PÉDAGOGIQUE"))
-                 )),
-                 ),# end conditionalPanel
-                 h5("Affichage"),
-                 checkboxInput("all_columns_1","Montrer toutes les variables dans la table", value=FALSE)
-               ),# end first column
-               column(width=9,
-                 leafletOutput("map_intro", height = "50vh")
-               )),# end second column and fluidRow
-               dataTableOutput("table_intro")
-    ),
-    tabPanel("Analyse Scraping",
-             fluidRow(
-               column(width=4,
-                 textInput("search_word", "Entrez un mot-clé à rechercher :", value = "légume"),
-                 textOutput("nb_jardins_concernes"),
-                 br(),
-                 h5("Top 20 des jardins (par nombre d’occurrences)"),
-                 plotOutput("plot_occurrences", height = "350px", click = "plot_click"),
-                 checkboxInput("all_columns_2","Montrer toutes les variables dans la table", value=FALSE)
-               ),#end first column
-               column(width=8,
-                 leafletOutput("map_scraping", height = "50vh"),
-                 uiOutput("no_result_text")
+  # img(
+  #   src = "www/GloUrb_wide.png",
+  #   height = 35,
+  #   width = 100
+  # ),
+  tabPanel("Introduction",
+           fluidRow(
+             column(width=3,
+                    checkboxGroupInput("modgest",
+                                       "Mode de gestion",
+                                       choices=c("Jardin à classer",
+                                                 "Jardin familial",
+                                                 "Jardin partagé"),
+                                       selected=c("Jardin familial",
+                                                  "Jardin partagé")),  
+                    conditionalPanel(condition = "input.modgest.includes('Jardin partagé')",
+                                     fluidRow(column(width=10,offset=1,
+                                                     checkboxGroupInput("sub_filter_classes_intro", "sous-catégories",
+                                                                        choices = list(
+                                                                          "partagé" = "JARDIN PARTAGÉ",
+                                                                          "pédagogique" = "JARDIN PÉDAGOGIQUE",
+                                                                          "de rue" = "JARDIN DE RUE",
+                                                                          "d'insertion" = "JARDIN D'INSERTION",
+                                                                          "Ferme urbaine" = "FERME URBAINE"
+                                                                        ),
+                                                                        selected = c("FERME URBAINE",
+                                                                                     "JARDIN D'INSERTION",
+                                                                                     "JARDIN DE RUE",
+                                                                                     "JARDIN PARTAGÉ",
+                                                                                     "JARDIN PÉDAGOGIQUE"))
+                                     )),
+                    ),# end conditionalPanel
+                    h5("Affichage"),
+                    checkboxInput("all_columns_1","Montrer toutes les variables dans la table", value=FALSE)
+             ),# end first column
+             column(width=9,
+                    leafletOutput("map_intro", height = "50vh")
+             )),# end second column and fluidRow
+           dataTableOutput("table_intro")
+  ),
+  tabPanel("Analyse Scraping",
+           fluidRow(
+             column(width=4,
+                    textInput("search_word", "Entrez un mot-clé à rechercher :", value = "légume"),
+                    textOutput("nb_jardins_concernes"),
+                    br(),
+                    h5("Top 20 des jardins (par nombre d’occurrences)"),
+                    plotOutput("plot_occurrences", height = "350px", click = "plot_click"),
+                    checkboxInput("all_columns_2","Montrer toutes les variables dans la table", value=FALSE)
+             ),#end first column
+             column(width=8,
+                    leafletOutput("map_scraping", height = "50vh"),
+                    uiOutput("no_result_text")
              )),
-             dataTableOutput("table_scraping") # end second column and fluidRow
+           dataTableOutput("table_scraping") # end second column and fluidRow
   )#end tabPanel
-
+  
 )
 
 # Serveur
@@ -100,9 +100,7 @@ server <- function(input, output, session) {
                      domain = names(layers_info))
   
   filter_data <- reactive({
-    print(input$modgest)
-    selected_classes <- c(input$modgest, input$sub_filter_classes_intro)
-    print(selected_classes)
+    selected_classes <- r_get_selected_classes()
     jardin %>% filter(classe_mot %in% selected_classes)
   })
   
@@ -122,11 +120,11 @@ server <- function(input, output, session) {
                           weight = 1,
                           opacity = 1,
                           fillOpacity = 0.5,
-                          popup = ~paste("<strong>", name, "</strong>", "<br>", "Type : ", classe_mot))
+                          popup = ~paste("<strong>", ID, "</strong>", "<br>", "Type : ", classe_mot))
   })
   
   observe({
-    selected_classes <- c(input$modgest, input$sub_filter_classes_intro)
+    selected_classes <- r_get_selected_classes()
     leafletProxy("map_intro") %>%
       clearControls() %>%
       addLegend(position = "bottomright",
@@ -138,7 +136,7 @@ server <- function(input, output, session) {
   
   output$table_intro <- renderDataTable({
     bounds <- input$map_intro_bounds
-    selected_classes <- c(input$modgest, input$sub_filter_classes_intro)
+    selected_classes <- r_get_selected_classes()
     data <- filter_data() 
     if(!input$all_columns_1){
       data= data %>% 
@@ -150,24 +148,39 @@ server <- function(input, output, session) {
         st_coordinates(st_centroid(geometry))[,1] <= bounds$east &
         st_coordinates(st_centroid(geometry))[,2] >= bounds$south &
         st_coordinates(st_centroid(geometry))[,2] <= bounds$north)
-    #datatable(st_set_geometry(df, NULL), options = list(scrollX = TRUE), width = "100%") %>% 
-      df %>% 
-        sf::st_drop_geometry() %>% 
-        format_table()
+    df %>% 
+      sf::st_drop_geometry() %>% 
+      format_table()
   })
   
-  get_circle_data <- reactive({
-    if (input$search_word == "") return(jardin_cercle[0, ])
-    jardin_cercle %>%
-      mutate(occurrences = str_count(toupper(texte_nettoye),
-                                     toupper(input$search_word))) %>% 
-      dplyr::mutate(highlight=case_when(occurrences>0~"red",
-                                        TRUE~"grey"))
-                                     #paste0("\b",toupper(input$search_word),"\b"))) 
+  r_get_selected_classes=reactive({
+    selected_classes=input$modgest
+    if("Jardin partagé" %in% input$modgest){
+      selected_classes=input$modgest[input$modgest!="Jardin partagé"]
+      selected_classes <- c(selected_classes, input$sub_filter_classes_intro)
+    }else{
+      selected_classes= input$modgest
+    }
+    selected_classes
+  })
+  
+  r_get_jacob_word= reactive({
+    conn=connect_to_jacob()
+    if(input$search_word == ""){result=jardin_cercle[0, ]}else{
+      sql <- glue::glue("SELECT * FROM jacob_spec WHERE lemma LIKE ?word")
+      query <- DBI::sqlInterpolate(conn, sql, word=input$search_word)
+      result <- sf::st_read(dsn = conn, query = query)
+    }
+    result %>% 
+      mutate(occurrences=n,
+             highlight=case_when(spec>2~"blue",
+                                 TRUE~"grey",
+                                 spec<(-2)~"red")) %>%
+      sf::st_cast( "POINT")
   })
   
   output$nb_jardins_concernes <- renderText({
-    nb <- nrow(get_circle_data() %>% filter(occurrences>0))
+    nb <- nrow(r_get_jacob_word() %>% filter(occurrences>0))
     if (input$search_word == "") return("")
     else if (nb == 0) return("Aucun jardin collectif concerné.")
     else if (nb == 1) return("Résultat : 1 jardin collectif est concerné.")
@@ -175,33 +188,30 @@ server <- function(input, output, session) {
   })
   
   output$map_scraping <- renderLeaflet({
-    filtered_data=get_circle_data()
+    filtered_data=r_get_jacob_word()
     leaflet() %>%
       addProviderTiles("CartoDB.Positron", options = providerTileOptions(opacity = 0.4)) %>% 
       addCircles(data = filtered_data,
-                 lat = ~st_coordinates(geometry)[,2],
-                 lng = ~st_coordinates(geometry)[,1],
                  radius = ~occurrences * 10,
                  color = ~ highlight,
                  fillColor = ~ highlight,
                  fillOpacity = 0.5,
-                 popup = ~paste("<strong>", name, "</strong>", "<br>", "Occurrences : ", occurrences))
+                 popup = ~paste("<strong>", ID, "</strong>", "<br>", "Occurrences : ", occurrences))
   })
   
   observe({
-    filtered_data <- get_circle_data() 
+    filtered_data <- r_get_jacob_word() 
+    print(filtered_data)
     proxy <- leafletProxy("map_scraping") %>% clearShapes()
     
     if (nrow(filtered_data) > 0) {
       output$no_result_text <- renderUI({ NULL })
       proxy %>% addCircles(data = filtered_data,
-                           lat = ~st_coordinates(geometry)[,2],
-                           lng = ~st_coordinates(geometry)[,1],
                            radius = ~occurrences * 10,
                            color = ~ highlight,
                            fillColor = ~ highlight,
                            fillOpacity = 0.5,
-                           popup = ~paste("<strong>", name, "</strong>", "<br>", "Occurrences : ", occurrences))
+                           popup = ~paste("<strong>", ID, "</strong>", "<br>", "Occurrences : ", occurrences))
     } else {
       output$no_result_text <- renderUI({
         div(style = "color:red; padding:10px;",
@@ -212,7 +222,7 @@ server <- function(input, output, session) {
   })
   
   output$plot_occurrences <- renderPlot({
-    data <- get_circle_data()
+    data <- r_get_jacob_word()
     if (nrow(data) == 0) return(NULL)
     top20 <- data %>% arrange(desc(occurrences)) %>% slice_head(n = 20)
     ggplot(top20, aes(x = reorder(ID, occurrences), y = occurrences)) +
@@ -225,7 +235,7 @@ server <- function(input, output, session) {
   })
   
   observeEvent(input$plot_click, {
-    data <- get_circle_data()
+    data <- r_get_jacob_word()
     top20 <- data %>% arrange(desc(occurrences)) %>% slice_head(n = 20)
     index <- nrow(top20) - round(input$plot_click$y) + 1
     if (index >= 1 && index <= nrow(top20)) {
@@ -238,7 +248,7 @@ server <- function(input, output, session) {
   output$table_scraping <- renderDataTable({
     bounds <- input$map_scraping_bounds
     # display all rows in bounding box where occurrences > 0
-    data <- get_circle_data() %>%
+    data <- r_get_jacob_word() %>%
       filter(occurrences > 0)
     if(!input$all_columns_2){
       data=data %>% 
