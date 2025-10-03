@@ -1,0 +1,12 @@
+services:
+  app:
+    image: ghcr.io/emiliec08/jacob:latest
+    build: .
+    ports:
+      - "3841:3841"
+    environment:
+      - JACOB_HOST=
+      - JACOB_PORT=
+      - JACOB_NAME=
+      - JACOB_USER_APP=
+      - JACOB_PASS_APP=
