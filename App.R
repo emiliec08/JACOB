@@ -236,13 +236,12 @@ ui <- navbarPage(
              column(width=4,
                     div(
                       style = "display:flex; flex-direction:column; gap:2px; max-width:300px;",
-                      textInput("search_word", "Entrez un mot-clé (lemma) :", value = ""),
+                      textInput("search_word", "Entrez un mot-clé (lemma) et appuyez sur Rechercher :", value = ""),
                       actionButton("do_search", "Rechercher", icon = icon("search"),
                                    style="width:120px; font-size:90%;")
                     ),
                     textOutput("nb_jardins_concernes"),
                     br(),
-                    h5("Top 20 des jardins contenant"),
                     plotOutput("plot_occurrences", height = "350px", click = "plot_click"),
                     checkboxInput("all_columns_2","Montrer toutes les variables", value=FALSE)
              ),
@@ -528,7 +527,7 @@ server <- function(input, output, session) {
   
   output$nb_jardins_concernes <- renderText({
     data <- r_get_jacob_word()
-    if (is.null(data) || nrow(data) == 0) return("Aucun résultat pour ce mot.")
+    if (is.null(data) || nrow(data) == 0) return("Aucun résultat pour ce terme.")
     data <- ensure_cols(data)
     nb <- nrow(dplyr::filter(data, occurrences > 0))
     if (nb == 0) "Aucun jardin collectif concerné."
@@ -547,7 +546,7 @@ server <- function(input, output, session) {
     proxy <- leafletProxy("map_scraping") %>% clearShapes() %>% clearMarkers()
     if (is.null(filtered_data) || nrow(filtered_data) == 0) {
       output$no_result_text <- renderUI({
-        div(style="color:red; padding:10px;", "Aucun résultat pour ce mot.")
+        div(style="color:red; padding:10px;", "Aucun résultat pour ce terme. La recherche fonctionne par lemme : essayez le singulier (pour les noms) ou l’infinitif (pour les verbes)")
       })
       return()
     }
@@ -605,15 +604,18 @@ server <- function(input, output, session) {
     }
   })
   
-  # ---- Graphique ----
+  #  Graphique # 
   output$plot_occurrences <- renderPlot({
+    req(input$do_search) # attend qu’on ait cliqué sur Rechercher
+    word_used <- isolate(input$search_word) # récupérer le mot (du le dernière recherche, du dernier clic)
+    
     data <- r_get_jacob_word()
     if (is.null(data) || nrow(data) == 0) return(NULL)
     data <- ensure_cols(data)
     top20 <- data %>% arrange(desc(occurrences)) %>% slice_head(n=20)
     ggplot(top20, aes(x = reorder(id, occurrences), y = occurrences)) +
       geom_col(fill = "lightblue") + coord_flip() +
-      labs(title="Occurrences du mot-clé par jardin", x="ID du jardin", y="Nombre d'occurrences") +
+      labs(title=paste0("Les 20 jardins où le mot « ", word_used, " » apparaît le plus souvent"), x="ID du jardin", y="Nombre d'occurrences") +
       theme_minimal(base_size = 13)
   })
   
