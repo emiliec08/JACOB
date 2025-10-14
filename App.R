@@ -13,8 +13,14 @@ library(stringr)
 library(DBI)
 library(purrr)
 
+# Ces libs sont nécessaires si tu lances le proxy ici
+library(plumber)
+library(httr2)
+library(callr)
+
 source("R/format_table.R")
 source("R/connect_to_jacob.R")   # connexion Postgres
+source("R/geoserver_proxy.R")    # proxy GeoServer (Basic Auth)
 
 # ---------------- Helpers ----------------
 `%||%` <- function(a, b) if (is.null(a)) b else a
@@ -54,8 +60,7 @@ sf_add_coords <- function(x) {
   k
 }
 
-# === Lexique: table des formes par lemma ===
-# Récupère toutes les formes (word) correspondant au lemma (insensible à la casse)
+# === Lexique
 get_lemma_forms <- function(lemma, con) {
   if (is.null(lemma) || !nzchar(lemma)) return(character(0))
   sql <- paste0("
@@ -71,7 +76,6 @@ get_lemma_forms <- function(lemma, con) {
   tolower(trimws(out$word))
 }
 
-# Construit une regex safe à partir d'une liste de formes (accents et métas échappés)
 build_regex_from_forms <- function(forms_vec) {
   if (length(forms_vec) == 0) return(NULL)
   esc <- stringr::str_replace_all(forms_vec, "([\\^$.|?*+(){}\\[\\]\\\\])", "\\\\\\1")
@@ -80,31 +84,17 @@ build_regex_from_forms <- function(forms_vec) {
   paste0("(?<!\\p{L})(", paste(esc, collapse = "|"), ")(?!\\p{L})")
 }
 
-# --- Surlignage basé sur le lexique (word <-> lemma) ---
-# - text: texte HTML/plain
-# - lemma: le lemma saisi (input)
-# - con: connexion DB (obligatoire si forms=NULL)
-# - forms: vecteur optionnel de formes; si fourni, on n'interroge pas la DB
 .highlight_keyword <- function(text, lemma, con = NULL, forms = NULL) {
   if (is.na(text) || !nzchar(text) || is.na(lemma) || !nzchar(lemma)) return(text)
-  
-  # 1) Récupère les formes depuis la DB (si non fournies)
   if (is.null(forms)) {
     if (is.null(con)) return(text)
     forms <- get_lemma_forms(lemma, con)
   }
-  
-  # 2) Fallback minimal si le lexique ne renvoie rien
   if (!length(forms)) {
-    # on tente quelques variantes régulières basiques autour du lemma
     forms <- tolower(c(lemma, paste0(lemma, c("s","es","e","er","é","ée","és","ées"))))
   }
-  
-  # 3) Construit la regex
   pat <- build_regex_from_forms(forms)
   if (is.null(pat)) return(text)
-  
-  # 4) Remplacement: gras noir
   stringr::str_replace_all(
     text,
     stringr::regex(pat, ignore_case = TRUE),
@@ -112,63 +102,43 @@ build_regex_from_forms <- function(forms_vec) {
   )
 }
 
-# --- Coloration par filename + surlignage via lexique
 colorize_by_filename <- function(df_texts, lemma, con, forms = NULL) {
   if (nrow(df_texts) == 0) return(NA_character_)
-  cols <- c("#1f77b4", "#2ca02c", "#d62728", "#9467bd", "#8c564b")  # palette discrète
-  
-  # ordre stable par filename pour une couleur constante
+  cols <- c("#1f77b4", "#2ca02c", "#d62728", "#9467bd", "#8c564b")
   df_texts <- df_texts %>% arrange(filename %||% "")
   uniq_f <- unique(df_texts$filename %||% "")
   col_map <- setNames(cols[(seq_along(uniq_f)-1) %% length(cols) + 1], uniq_f)
-  
-  # On s'assure que les colonnes existent
   if (!"source_url" %in% names(df_texts)) df_texts$source_url <- NA_character_
   if (!"filename"   %in% names(df_texts)) df_texts$filename   <- NA_character_
   if (!"texte_nettoye" %in% names(df_texts)) df_texts$texte_nettoye <- ""
   
-  # Récupère les formes UNE SEULE FOIS si pas fournies
-  if (is.null(forms)) {
-    forms <- get_lemma_forms(lemma, con)
-  }
+  if (is.null(forms)) forms <- get_lemma_forms(lemma, con)
   
-  parts <- pmap_chr(df_texts, function(garden_id, filename, source_url, texte_nettoye, ...) {
+  parts <- purrr::pmap_chr(df_texts, function(garden_id, filename, source_url, texte_nettoye, ...) {
     col <- col_map[[filename %||% ""]]
     t <- texte_nettoye %||% ""
     if (!nzchar(t)) return("")
-    
-    # Surligner via lexique
     t <- .highlight_keyword(t, lemma, con = con, forms = forms)
-    
-    # Badges filename + source_url
     filename_safe <- if (!is.null(filename) && nzchar(filename)) htmltools::htmlEscape(filename) else ""
-    badge_file <- if (nzchar(filename_safe)) {
-      sprintf("<span style='background:%s20;color:%s;padding:2px 6px;border-radius:8px;font-size:90%%;margin-right:6px;'>%s</span>", col, col, filename_safe)
-    } else ""
-    
+    badge_file <- if (nzchar(filename_safe)) sprintf("<span style='background:%s20;color:%s;padding:2px 6px;border-radius:8px;font-size:90%%;margin-right:6px;'>%s</span>", col, col, filename_safe) else ""
     src <- if (!is.null(source_url)) as.character(source_url) else ""
     src_safe <- if (nzchar(src)) htmltools::htmlEscape(src) else ""
-    badge_src <- if (nzchar(src_safe)) {
-      sprintf("<span style='background:#00000010;color:#444;padding:2px 6px;border-radius:8px;font-size:90%%;margin-right:6px;'>Source : %s</span>", src_safe)
-    } else ""
-    
+    badge_src <- if (nzchar(src_safe)) sprintf("<span style='background:#00000010;color:#444;padding:2px 6px;border-radius:8px;font-size:90%%;margin-right:6px;'>Source : %s</span>", src_safe) else ""
     sprintf("<div style='margin-bottom:6px; color:%s;'>%s%s%s</div>", col, badge_file, badge_src, t)
   })
-  
   paste(parts[parts != ""], collapse = "")
 }
 
 # --- Schéma & tables ---
 DB_SCHEMA <- '"Jacob_data"'
 T_POLY    <- paste0(DB_SCHEMA, '.jardin_poly')
-T_PNT     <- paste0(DB_SCHEMA, '.jardin_pnt')
+T_PNT     <- paste0(DB_SCHEMA, '.jardin_pnt')             # (plus utilisé pour la carte intro)
 T_INFOS   <- paste0(DB_SCHEMA, '.jardin_infos')
-T_SPEC    <- paste0(DB_SCHEMA, '.jardin_collectif_spec')      # clé = garden_id
-T_TEXT    <- paste0(DB_SCHEMA, '.jardins_texte_url')          # clé = garden_id
-T_LEX     <- paste0(DB_SCHEMA, '.jardin_lexique_lemma')       # <-- lexique (word, lemma)
+T_SPEC    <- paste0(DB_SCHEMA, '.jardin_collectif_spec')  # clé = garden_id
+T_TEXT    <- paste0(DB_SCHEMA, '.jardins_texte_url')
+T_LEX     <- paste0(DB_SCHEMA, '.jardin_lexique_lemma')
 GEOM_COL  <- "geom"
 
-# Couleurs connues
 layers_info <- list(
   "JARDIN PARTAGÉ"      = "darkgreen",
   "FERME URBAINE"       = "darkseagreen",
@@ -181,7 +151,17 @@ layers_info <- list(
 known_names <- names(layers_info)
 known_cols  <- unname(unlist(layers_info))
 
-# --- Helper pare-balles ---
+# Libellés personnalisés pour la légende (par valeur de classe_mot)
+legend_labels <- c(
+  "JARDIN PARTAGÉ"      = "Jardin partagé",
+  "JARDIN PÉDAGOGIQUE"  = "Jardin pédagogique",
+  "JARDIN DE RUE"       = "Jardin de rue",
+  "JARDIN D'INSERTION"  = "Jardin d'insertion",
+  "FERME URBAINE"       = "Ferme urbaine",
+  "JARDIN FAMILIAL"     = "Jardin familial",
+  "JARDIN À CLASSER"    = "À classer"
+)
+
 ensure_cols <- function(df) {
   if (is.null(df)) return(df)
   if (!"occurrences" %in% names(df)) df$occurrences <- 0L
@@ -191,23 +171,26 @@ ensure_cols <- function(df) {
 
 # ---------------- UI ----------------
 ui <- navbarPage(
-  # Titre image (mettre le fichier dans /www)
   title = div(
     img(src = "logo_jacob_clean.png", height = "50px", style = "max-height:100px;"),
     style = "display:flex; justify-content:center; align-items:center; width:100%;"
   ),
   
-  # Onglet 1 : Polygones
+  header = shinyjs::useShinyjs(),  # <-- active shinyjs
+  
+  # Onglet 1 : Introduction = WMS (3–11) puis Polygones (>= 12)
   tabPanel("Introduction",
            fluidRow(
              column(width=3,
+                    # état du zoom
+                    htmlOutput("zoom_hint_intro"),
                     checkboxGroupInput("modgest", "Mode de gestion",
                                        choices = c(
                                          "Jardin à classer" = "JARDIN À CLASSER",
                                          "Jardin familial"  = "JARDIN FAMILIAL",
                                          "Jardin partagé"   = "JARDIN PARTAGÉ"
                                        ),
-                                       selected=c("JARDIN FAMILIAL", "JARDIN PARTAGÉ")),
+                                       selected=c("JARDIN FAMILIAL", "JARDIN PARTAGÉ","JARDIN À CLASSER")),
                     conditionalPanel(condition = "input.modgest.includes('JARDIN PARTAGÉ')",
                                      fluidRow(column(width=10,offset=1,
                                                      checkboxGroupInput("sub_filter_classes_intro", "sous-catégories",
@@ -248,13 +231,19 @@ ui <- navbarPage(
              column(width=8,
                     leafletOutput("map_scraping", height = "50vh"),
                     uiOutput("no_result_text")
-             )),
+             )
+           ),
            dataTableOutput("table_scraping")
   )
 )
 
 # ---------------- SERVER ----------------
 server <- function(input, output, session) {
+  
+  # --- Démarre le proxy WMS (Basic Auth) ---
+  proxy <- geoserver_proxy_start()
+  onStop(function() geoserver_proxy_stop(proxy))
+  proxy_base <- proxy$base_url  # "http://127.0.0.1:PORT/wms"
   
   # ---- Classes sélectionnées ----
   r_get_selected_classes <- reactive({
@@ -266,7 +255,7 @@ server <- function(input, output, session) {
     selected_classes
   })
   
-  # ---- POLYGONES ----
+  # ---- POLYGONES (inchangé) ----
   filter_data <- reactive({
     bounds  <- input$map_intro_bounds
     zoom    <- input$map_intro_zoom %||% 1
@@ -298,45 +287,11 @@ server <- function(input, output, session) {
     out
   })
   
-  # >>> Points (centroïdes) pour aperçu national entre zoom 3 et 11
-  filter_overview_points <- reactive({
-    bounds  <- input$map_intro_bounds
-    zoom    <- input$map_intro_zoom %||% 1
-    classes <- r_get_selected_classes()
-    if (is.null(bounds) || length(classes) == 0 || zoom < 3 || zoom > 11) return(empty_sf_4326())
-    
-    con <- connect_to_jacob()
-    env <- make_envelope_sql(bounds)
-    classes_sql <- paste0("ARRAY[", paste(sprintf("'%s'", sql_escape(classes)), collapse=","), "]")
-    
-    sql <- sprintf("
-      SELECT
-        p.id,
-        i.name,
-        i.source_layer,
-        i.classe_brute,
-        i.classe_mot,
-        ST_PointOnSurface(p.%s) AS geom
-      FROM %s p
-      JOIN %s i ON i.id = p.id
-      WHERE i.classe_mot = ANY(%s)
-        AND ST_Intersects(p.%s, %s)
-      LIMIT 50000;", GEOM_COL, T_POLY, T_INFOS, classes_sql, GEOM_COL, env)
-    
-    out <- sf::st_read(con, query = sql, quiet = TRUE)
-    if (nrow(out) == 0) return(empty_sf_4326())
-    if (is.na(sf::st_crs(out)) || sf::st_crs(out)$epsg != 4326) out <- sf::st_transform(out, 4326)
-    out
-  })
-  # <<<
-  
-  # ---- Palette ----
+  # ---- Palette polygones ----
   pal_poly <- reactive({
     data_poly <- filter_data()
-    data_pnt  <- filter_overview_points()
     dom <- character(0)
     if ("classe_mot" %in% names(data_poly)) dom <- c(dom, data_poly$classe_mot)
-    if ("classe_mot" %in% names(data_pnt))  dom <- c(dom,  data_pnt$classe_mot)
     dom <- sort(unique(dom))
     if (length(dom) == 0) return(colorFactor(palette = known_cols, domain = character(0)))
     cols <- vapply(dom, function(cl) {
@@ -347,66 +302,117 @@ server <- function(input, output, session) {
     colorFactor(palette = unname(cols), domain = dom)
   })
   
+  # ---- Carte INTRO : init avec WMS (group) ----
   output$map_intro <- renderLeaflet({
-    leaflet() %>% addProviderTiles("CartoDB.Positron", options = providerTileOptions(opacity = 0.4)) %>%
+    leaflet() %>%
+      addProviderTiles("CartoDB.Positron", options = providerTileOptions(opacity = 0.4)) %>%
+      addWMSTiles(
+        baseUrl = proxy_base,
+        layers  = "jardin_pnt_infos",   # nom sans 'jacob:'
+        options = WMSTileOptions(
+          version     = "1.1.1",
+          format      = "image/png",
+          transparent = TRUE,
+          tiled       = TRUE,
+          styles      = ""                  # "point" mais la j'ai déjà créé un style sur QGIS SLD
+        ),
+        group = "WMS points"
+      ) %>%
+      addLayersControl(
+        overlayGroups = c("WMS points","Polygones"),
+        options = layersControlOptions(collapsed = TRUE)
+      ) %>%
+      hideGroup("Polygones") %>%
       setView(lng = 2.35, lat = 46.7, zoom = 5)
   })
   
-  # >>> Affichage conditionnel : points (zoom 3–11) vs polygones (zoom >= 12)
+  # >>> Toggle WMS (zoom 3–11) vs Polygones (zoom >= 12)
   observe({
-    zoom <- input$map_intro_zoom %||% 1
-    proxy <- leafletProxy("map_intro") %>% clearShapes()
-    pal <- pal_poly()
+    z <- input$map_intro_zoom %||% 1
+    proxy_map <- leafletProxy("map_intro")
     
-    if (zoom >= 12) {
+    # Affiche un petit état au-dessus des filtres
+    output$zoom_hint_intro <- renderUI({
+      if (z >= 12) {
+        HTML("<div style='color:#02b808;margin-bottom:6px;'>🔓 Zoom ≥ 12 : filtres activés.</div>")
+      } else {
+        HTML("<div style='color:#9e9e9e;margin-bottom:6px;'>🔒 Zoomez pour utiliser les filtres. (≥ 12) </div>")
+      }
+    })
+    
+    # Active/désactive les filtres selon le zoom
+    if (z >= 12) {
+      shinyjs::enable("modgest")
+      shinyjs::enable("sub_filter_classes_intro")
+    } else {
+      shinyjs::disable("modgest")
+      shinyjs::disable("sub_filter_classes_intro")
+      # Option : vider les sélections quand c’est verrouillé
+      # updateCheckboxGroupInput(session, "modgest", selected = character(0))
+      # updateCheckboxGroupInput(session, "sub_filter_classes_intro", selected = character(0))
+    }
+    
+    if (z >= 12) {
+      # -- afficher Polygones, masquer WMS
       data_poly <- filter_data()
+      proxy_map %>% hideGroup("WMS points") %>% showGroup("Polygones") %>% clearGroup("Polygones")
+      
       if (nrow(data_poly) > 0) {
-        proxy %>% addPolygons(
+        pal <- pal_poly()
+        proxy_map %>% addPolygons(
           data = data_poly,
           fillColor = ~pal(classe_mot),
           color = "black", weight = 1, opacity = 1, fillOpacity = 0.5,
           popup = ~paste0("<strong>", id, "</strong>",
                           "<br>Type : ", classe_mot,
                           "<br>Surface : ", surface_m2,
-                          "<br>Nom : ", name)
+                          "<br>Nom : ", name),
+          group = "Polygones"
         )
       }
-    } else if (zoom >= 3 && zoom <= 11) {
-      data_pnt <- filter_overview_points()
-      if (nrow(data_pnt) > 0) {
-        data_pnt <- sf_add_coords(data_pnt)
-        if (nrow(data_pnt) > 0 && all(c("lng","lat") %in% names(data_pnt))) {
-          radius_val <- ifelse(zoom >= 9, 500, 1500)
-          proxy %>% addCircles(
-            data = data_pnt,
-            lng = ~lng, lat = ~lat,
-            radius = radius_val,
-            stroke = TRUE, color = "lightgrey", weight = 0.2, opacity = 0.5,
-            fillColor = ~pal(classe_mot), fillOpacity = 1,
-            options = pathOptions(interactive = FALSE, bubblingMouseEvents = FALSE)
-          )
-        }
+      
+      # Légende pour polygones
+      proxy_map %>% clearControls()
+      data_any <- data_poly
+      if (nrow(data_any) > 0 && "classe_mot" %in% names(data_any)) {
+        pal <- pal_poly()
+        classes_presentes <- sort(unique(data_any$classe_mot))
+        # 1) couleurs à partir de la palette
+        cols <- pal(classes_presentes)
+        # 2) étiquettes personnalisées (fallback = valeur brute si non mappée)
+        tab <- table(data_any$classe_mot)
+        labels <- vapply(classes_presentes, function(cl) {
+          base <- if (cl %in% names(legend_labels)) legend_labels[[cl]] else cl
+          sprintf("%s (%d)", base, as.integer(tab[[cl]] %||% 0))
+        }, character(1))
+        
+        proxy_map %>% addLegend(
+          position = "bottomright",
+          colors   = cols,
+          labels   = labels,
+          title    = "Types de jardins",
+          opacity  = 1)
       }
+      
+    } else if (z >= 3 && z <= 11) {
+      # -- afficher WMS, masquer Polygones (pas de légende ici)
+      proxy_map %>% hideGroup("Polygones") %>% showGroup("WMS points") %>% clearControls()
+      
+      # Légende WMS via GetLegendGraphic :
+      legend_url <- paste0(proxy_base,
+        "?service=WMS&request=GetLegendGraphic&format=image/png&layer=jardin_pnt_infos")
+      proxy_map %>% addControl(html = sprintf(
+        '<div style="background:white;padding:6px;border-radius:6px">
+           <b>Types de jardins</b><br><img src="%s" style="max-width:180px">
+         </div>', legend_url),
+        position = "bottomright")
+      
+    } else {
+      proxy_map %>% hideGroup("WMS points") %>% hideGroup("Polygones") %>% clearControls()
     }
   })
-  # <<<
   
-  # >>> Légende valable dans les deux cas
-  observe({
-    data_poly <- filter_data()
-    data_pnt  <- filter_overview_points()
-    data_any  <- if (nrow(data_poly) > 0) data_poly else data_pnt
-    
-    proxy <- leafletProxy("map_intro") %>% clearControls()
-    if (nrow(data_any) > 0 && "classe_mot" %in% names(data_any)) {
-      pal <- pal_poly()
-      classes_presentes <- sort(unique(data_any$classe_mot))
-      proxy %>% addLegend("bottomright", pal = pal,
-                          values = classes_presentes, title = "Types de jardins", opacity = 1)
-    }
-  })
-  # <<<
-  
+  # ---- Table intro
   output$table_intro <- renderDataTable({
     data <- filter_data()
     if(!input$all_columns_1){
@@ -416,13 +422,12 @@ server <- function(input, output, session) {
     data %>% st_drop_geometry() %>% format_table()
   })
   
-  # ---- SCRAPING (clé correcte : s.garden_id = p.id) ----
+  # ---- SCRAPING : 
   r_get_jacob_word <- eventReactive(input$do_search, {
     w <- trimws(input$search_word %||% "")
     if (w == "") return(empty_sf_4326())
     con <- connect_to_jacob()
     
-    # 1) Requête METRICS (PAS de jointure sur les textes -> pas de duplication)
     sql_metrics <- paste0("
       SELECT
         p.id,
@@ -445,8 +450,6 @@ server <- function(input, output, session) {
     out <- tryCatch(sf::st_read(con, query = q1, quiet = TRUE), error = function(e) NULL)
     if (is.null(out) || nrow(out) == 0) return(empty_sf_4326())
     if (is.na(sf::st_crs(out)) || sf::st_crs(out)$epsg != 4326) out <- sf::st_transform(out, 4326)
-    
-    # Agrégation par garden_id, en restant en sf
     out <- out[!sf::st_is_empty(out), ]
     if (nrow(out) == 0) return(empty_sf_4326())
     
@@ -475,11 +478,9 @@ server <- function(input, output, session) {
       out_agg <- sf::st_transform(out_agg, 4326)
     }
     out_agg <- out_agg[!sf::st_is_empty(out_agg), ]
-    if (nrow(out_agg) == 0) return(empty_sf_4326())
     coords <- sf::st_coordinates(sf::st_geometry(out_agg))
     out_agg$lng <- coords[,1]; out_agg$lat <- coords[,2]
     
-    # 2) Requête TEXTES (séparée) puis coloration par filename
     gids <- unique(out_agg$garden_id)
     if (length(gids) > 0) {
       gids_sql <- paste(sprintf("'%s'", sql_escape(as.character(gids))), collapse = ",")
@@ -494,10 +495,7 @@ server <- function(input, output, session) {
     }
     
     if (nrow(texts) > 0) {
-      # Prépare les formes UNE FOIS pour le lemme recherché
       forms_for_w <- get_lemma_forms(w, con)
-      
-      # Assemble HTML coloré par garden_id
       texts_by_g <- texts %>%
         mutate(texte_nettoye = ifelse(is.na(texte_nettoye), "", texte_nettoye),
                filename = ifelse(is.na(filename), "", filename)) %>%
@@ -511,17 +509,15 @@ server <- function(input, output, session) {
       out_agg$texte <- NA_character_
     }
     
-    # Couleurs des cercles selon spec
     out_agg <- out_agg %>%
       mutate(
         occurrences = as.integer(occurrences),
-        highlight = case_when(
+        highlight = dplyr::case_when(
           !is.na(spec) & spec >  2 ~ "steelblue",
           !is.na(spec) & spec < -2 ~ "coral",
           TRUE                     ~ "grey"
         )
       )
-    
     ensure_cols(out_agg)
   }, ignoreInit = TRUE)
   
@@ -540,10 +536,9 @@ server <- function(input, output, session) {
       setView(lng = 2.35, lat = 46.7, zoom = 5)
   })
   
-  # --- MàJ carte scraping : recentrage + rendu visible (px vs mètres) ---
   observe({
     filtered_data <- r_get_jacob_word()
-    proxy <- leafletProxy("map_scraping") %>% clearShapes() %>% clearMarkers()
+    proxy_map <- leafletProxy("map_scraping") %>% clearShapes() %>% clearMarkers()
     if (is.null(filtered_data) || nrow(filtered_data) == 0) {
       output$no_result_text <- renderUI({
         div(style="color:red; padding:10px;", "Aucun résultat pour ce terme. La recherche fonctionne par lemme : essayez le singulier (pour les noms) ou l’infinitif (pour les verbes)")
@@ -551,10 +546,7 @@ server <- function(input, output, session) {
       return()
     }
     filtered_data <- ensure_cols(filtered_data)
-    
-    if (!all(c("lng","lat") %in% names(filtered_data))) {
-      filtered_data <- sf_add_coords(filtered_data)
-    }
+    if (!all(c("lng","lat") %in% names(filtered_data))) filtered_data <- sf_add_coords(filtered_data)
     if (!(nrow(filtered_data) > 0 && all(c("lng","lat") %in% names(filtered_data)))) {
       output$no_result_text <- renderUI({
         div(style="color:red; padding:10px;", "Résultats trouvés mais géométrie manquante.")
@@ -563,18 +555,16 @@ server <- function(input, output, session) {
     }
     output$no_result_text <- renderUI({ NULL })
     
-    # Recentrage auto
     bb <- sf::st_bbox(filtered_data)
     if (nrow(filtered_data) == 1) {
-      proxy %>% flyTo(lng = filtered_data$lng[1], lat = filtered_data$lat[1], zoom = 14)
+      proxy_map %>% flyTo(lng = filtered_data$lng[1], lat = filtered_data$lat[1], zoom = 14)
     } else if (is.finite(bb$xmin) && is.finite(bb$ymin) && is.finite(bb$xmax) && is.finite(bb$ymax)) {
-      proxy %>% fitBounds(lng1 = bb$xmin, lat1 = bb$ymin, lng2 = bb$xmax, lat2 = bb$ymax)
+      proxy_map %>% fitBounds(lng1 = bb$xmin, lat1 = bb$ymin, lng2 = bb$xmax, lat2 = bb$ymax)
     }
     
-    # Rendu : pixels quand on est loin, mètres quand on est proche
     current_zoom <- input$map_scraping_zoom %||% 5
     if (!is.null(current_zoom) && current_zoom <= 9) {
-      proxy %>% addCircleMarkers(
+      proxy_map %>% addCircleMarkers(
         data = filtered_data,
         lng = ~lng, lat = ~lat,
         radius = ~pmax(occurrences, 1) ^ 0.5 * 6,
@@ -588,7 +578,7 @@ server <- function(input, output, session) {
                         "<br>Type : ", classe_mot)
       )
     } else {
-      proxy %>% addCircles(
+      proxy_map %>% addCircles(
         data = filtered_data,
         lng = ~lng, lat = ~lat,
         radius = ~pmax(occurrences, 1) * 50,
@@ -604,61 +594,50 @@ server <- function(input, output, session) {
     }
   })
   
-  #  Graphique # 
   output$plot_occurrences <- renderPlot({
-    req(input$do_search) # attend qu’on ait cliqué sur Rechercher
-    word_used <- isolate(input$search_word) # récupérer le mot (du le dernière recherche, du dernier clic)
-    
+    req(input$do_search)
+    word_used <- isolate(input$search_word)
     data <- r_get_jacob_word()
     if (is.null(data) || nrow(data) == 0) return(NULL)
     data <- ensure_cols(data)
     top20 <- data %>% arrange(desc(occurrences)) %>% slice_head(n=20)
     ggplot(top20, aes(x = reorder(id, occurrences), y = occurrences)) +
       geom_col(fill = "lightblue") + coord_flip() +
-      labs(title=paste0("Les 20 jardins où le mot « ", word_used, " » apparaît le plus souvent"), x="ID du jardin", y="Nombre d'occurrences") +
+      labs(title=paste0("Les 20 jardins où le mot « ", word_used, " » apparaît le plus souvent"),
+           x="ID du jardin", y="Nombre d'occurrences") +
       theme_minimal(base_size = 13)
   })
   
-  # ---- Clic sur le graphe ----
   observeEvent(input$plot_click, {
     data <- r_get_jacob_word()
     if (is.null(data) || nrow(data) == 0) return()
     data <- ensure_cols(data)
-    
     top20 <- data %>% arrange(desc(occurrences)) %>% slice_head(n = 20)
     if (nrow(top20) == 0) return()
-    
     level_order <- levels(reorder(top20$id, top20$occurrences))
     if (is.null(level_order)) {
       ord <- order(top20$occurrences, decreasing = FALSE)
       level_order <- unique(top20$id[ord])
     }
-    
     y_idx <- suppressWarnings(round(input$plot_click$y))
     if (is.na(y_idx) || y_idx < 1 || y_idx > length(level_order)) return()
-    
     id_clicked <- level_order[y_idx]
     row_clicked <- which(top20$id == id_clicked)
     if (length(row_clicked) == 0) return()
-    
     coords <- sf::st_coordinates(sf::st_geometry(top20[row_clicked[1], ]))
     if (is.null(coords) || nrow(coords) == 0) return()
-    
     leafletProxy("map_scraping") %>%
       flyTo(lng = coords[1, 1], lat = coords[1, 2], zoom = 16)
   })
   
-  # ---- Table scraping (HTML pour voir <b>...</b> dans 'texte') ----
   output$table_scraping <- renderDataTable({
     data <- r_get_jacob_word()
     if (is.null(data) || nrow(data) == 0) return(data.frame())
     data <- ensure_cols(data)
     data <- dplyr::filter(data, occurrences > 0)
-    
     data <- data %>% dplyr::select(any_of(c(
       "id","name","lemma","occurrences","spec","source_layer","surface_m2","classe_mot","texte"
     )))
-    
     if (nrow(data) == 0) return(data[0, ])
     df <- data %>% sf::st_drop_geometry()
     DT::datatable(df, escape = FALSE, options = list(pageLength = 10, scrollX = TRUE))
