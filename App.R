@@ -12,6 +12,9 @@ library(shinyjs)
 library(stringr)
 library(DBI)
 library(purrr)
+library(shinycssloaders) # pour le spinner de chargmt
+library(shinybusy)
+
 
 # Ces libs sont nécessaires si tu lances le proxy ici
 library(plumber)
@@ -132,9 +135,9 @@ colorize_by_filename <- function(df_texts, lemma, con, forms = NULL) {
 # --- Schéma & tables ---
 DB_SCHEMA <- '"Jacob_data"'
 T_POLY    <- paste0(DB_SCHEMA, '.jardin_poly')
-T_PNT     <- paste0(DB_SCHEMA, '.jardin_pnt')             # (plus utilisé pour la carte intro)
+T_PNT     <- paste0(DB_SCHEMA, '.jardin_pnt_simple')             # (plus utilisé pour la carte intro)
 T_INFOS   <- paste0(DB_SCHEMA, '.jardin_infos')
-T_SPEC    <- paste0(DB_SCHEMA, '.jardin_collectif_spec')  # clé = garden_id
+T_SPEC    <- paste0(DB_SCHEMA, '.jardin_collectif_spec_n')  # clé = garden_id
 T_TEXT    <- paste0(DB_SCHEMA, '.jardins_texte_url')
 T_LEX     <- paste0(DB_SCHEMA, '.jardin_lexique_lemma')
 GEOM_COL  <- "geom"
@@ -169,7 +172,7 @@ ensure_cols <- function(df) {
   df
 }
 
-# ---------------- UI ----------------
+                                                                            # ---------------- UI ----------------
 ui <- navbarPage(
   title = div(
     img(src = "logo_jacob_clean.png", height = "50px", style = "max-height:100px;"),
@@ -225,19 +228,21 @@ ui <- navbarPage(
                     ),
                     textOutput("nb_jardins_concernes"),
                     br(),
-                    plotOutput("plot_occurrences", height = "350px", click = "plot_click"),
-                    checkboxInput("all_columns_2","Montrer toutes les variables", value=FALSE)
+                    plotOutput("plot_occurrences", height = "350px", click = "plot_click")
              ),
              column(width=8,
                     leafletOutput("map_scraping", height = "50vh"),
                     uiOutput("no_result_text")
              )
            ),
-           dataTableOutput("table_scraping")
+           dataTableOutput("table_scraping"),
+           uiOutput("text_zone")
   )
 )
 
-# ---------------- SERVER ----------------
+                                                                  # ---------------- SERVER ----------------
+
+############################################################################### ONGLET INTRO / ################################################################ 
 server <- function(input, output, session) {
   
   # --- Démarre le proxy WMS (Basic Auth) ---
@@ -422,105 +427,89 @@ server <- function(input, output, session) {
     data %>% st_drop_geometry() %>% format_table()
   })
   
-  # ---- SCRAPING : 
+  ###################################################################################### ONGLET SCRAPING : ################################################################ 
+  
+  
   r_get_jacob_word <- eventReactive(input$do_search, {
     w <- trimws(input$search_word %||% "")
     if (w == "") return(empty_sf_4326())
+    
+    show_modal_spinner(
+      spin = "fading-circle",
+      text = sprintf("Recherche en cours pour « %s »...", w),
+      color = "#8EBF8E"
+    )
+    
     con <- connect_to_jacob()
     
+    # --- Agrégation SQL directe ---
     sql_metrics <- paste0("
-      SELECT
-        p.id,
+      SELECT 
         s.garden_id,
-        (ST_Dump(p.", GEOM_COL, ")).geom AS geom,
         s.lemma,
-        s.n   AS occurrences,
-        s.spec,
+        SUM(s.n) AS occurrences,
+        MAX(s.spec) AS spec
+      FROM ", T_SPEC, " s
+      WHERE LOWER(TRIM(s.lemma)) = LOWER(TRIM(?word_exact))
+      GROUP BY s.garden_id, s.lemma
+    ")
+    
+    q1 <- DBI::sqlInterpolate(con, sql_metrics, word_exact = w)
+    agg_data <- tryCatch(DBI::dbGetQuery(con, q1), error = function(e) NULL)
+    
+    if (is.null(agg_data) || nrow(agg_data) == 0) {
+      remove_modal_spinner()
+      return(empty_sf_4326())
+    }
+    
+    # --- Géométries + infos ---
+    gids_sql <- paste(sprintf("'%s'", sql_escape(as.character(agg_data$garden_id))), collapse = ",")
+    sql_geom <- sprintf("
+      SELECT 
+        p.id,
+        ST_X(p.geom) AS lng,
+        ST_Y(p.geom) AS lat,
         i.name,
         i.source_layer,
         i.surface_m2,
         i.classe_mot,
         i.classe_brute
-      FROM ", T_PNT, " p
-      JOIN ", T_SPEC, " s   ON s.garden_id = p.id
-      LEFT JOIN ", T_INFOS, " i ON i.id = p.id
-      WHERE LOWER(TRIM(s.lemma)) = LOWER(TRIM(?word_exact))
-    ")
-    q1 <- DBI::sqlInterpolate(con, sql_metrics, word_exact = w)
-    out <- tryCatch(sf::st_read(con, query = q1, quiet = TRUE), error = function(e) NULL)
-    if (is.null(out) || nrow(out) == 0) return(empty_sf_4326())
-    if (is.na(sf::st_crs(out)) || sf::st_crs(out)$epsg != 4326) out <- sf::st_transform(out, 4326)
-    out <- out[!sf::st_is_empty(out), ]
-    if (nrow(out) == 0) return(empty_sf_4326())
+      FROM %s p
+      LEFT JOIN %s i ON i.id = p.id
+      WHERE p.id IN (%s)
+    ", T_PNT, T_INFOS, gids_sql)
     
-    out_agg <- out %>%
-      dplyr::group_by(garden_id) %>%
-      dplyr::summarise(
-        id           = dplyr::first(id),
-        lemma        = dplyr::first(lemma),
-        occurrences  = sum(occurrences, na.rm = TRUE),
-        spec         = { v <- spec; if (all(is.na(v))) NA_real_ else max(v, na.rm = TRUE) },
-        name         = {
-          nm <- name[!is.na(name) & trimws(name) != ""]
-          if (length(nm)) nm[1] else dplyr::first(name)
-        },
-        source_layer = dplyr::first(source_layer),
-        surface_m2   = dplyr::first(surface_m2),
-        classe_mot   = dplyr::first(classe_mot),
-        classe_brute = dplyr::first(classe_brute),
-        geom         = sf::st_union(geom),
-        .groups = "drop"
-      ) %>%
-      sf::st_make_valid() %>%
-      dplyr::mutate(geom = sf::st_centroid(geom))
-    
-    if (is.na(sf::st_crs(out_agg)) || sf::st_crs(out_agg)$epsg != 4326) {
-      out_agg <- sf::st_transform(out_agg, 4326)
-    }
-    out_agg <- out_agg[!sf::st_is_empty(out_agg), ]
-    coords <- sf::st_coordinates(sf::st_geometry(out_agg))
-    out_agg$lng <- coords[,1]; out_agg$lat <- coords[,2]
-    
-    gids <- unique(out_agg$garden_id)
-    if (length(gids) > 0) {
-      gids_sql <- paste(sprintf("'%s'", sql_escape(as.character(gids))), collapse = ",")
-      sql_texts <- sprintf("
-        SELECT garden_id, filename, source_url, texte_nettoye
-        FROM %s
-        WHERE garden_id IN (%s)
-      ", T_TEXT, gids_sql)
-      texts <- tryCatch(DBI::dbGetQuery(con, sql_texts), error = function(e) data.frame())
-    } else {
-      texts <- data.frame()
-    }
-    
-    if (nrow(texts) > 0) {
-      forms_for_w <- get_lemma_forms(w, con)
-      texts_by_g <- texts %>%
-        mutate(texte_nettoye = ifelse(is.na(texte_nettoye), "", texte_nettoye),
-               filename = ifelse(is.na(filename), "", filename)) %>%
-        group_by(garden_id) %>%
-        summarise(
-          texte = colorize_by_filename(cur_data(), lemma = w, con = con, forms = forms_for_w),
-          .groups = "drop"
-        )
-      out_agg <- out_agg %>% left_join(texts_by_g, by = "garden_id")
-    } else {
-      out_agg$texte <- NA_character_
-    }
-    
-    out_agg <- out_agg %>%
+    geom_data <- tryCatch(DBI::dbGetQuery(con, sql_geom), error = function(e) NULL)
+    out <- dplyr::left_join(geom_data, agg_data, by = c("id" = "garden_id")) %>%
       mutate(
         occurrences = as.integer(occurrences),
-        highlight = dplyr::case_when(
-          !is.na(spec) & spec >  2 ~ "steelblue",
-          !is.na(spec) & spec < -2 ~ "coral",
-          TRUE                     ~ "grey"
-        )
+        spec = as.numeric(spec),
+        highlight = case_when(
+          !is.na(spec) & spec >  0.1 ~ "steelblue",
+          !is.na(spec) & spec < -1.5 ~ "coral",
+          TRUE ~ "lightgrey"
+        ),
+        texte = NA_character_
       )
-    ensure_cols(out_agg)
+    
+    remove_modal_spinner()
+    sf::st_as_sf(out, coords = c("lng", "lat"), crs = 4326)
   }, ignoreInit = TRUE)
   
+  
+  #  Quand on lance une nouvelle recherche, on vide le texte sélectionné dans text_zone
+  observeEvent(input$do_search, {
+    r_selected_text(NULL)   # remet la zone de texte à vide
+  })
+  
+  
+  # --- Spinner OFF quand tout est prêt ---
+  observeEvent(r_get_jacob_word(), {
+    shinyjs::delay(800, remove_modal_spinner())
+  })
+  
+  
+  # ---- Texte résumé résultats ----
   output$nb_jardins_concernes <- renderText({
     data <- r_get_jacob_word()
     if (is.null(data) || nrow(data) == 0) return("Aucun résultat pour ce terme.")
@@ -531,116 +520,219 @@ server <- function(input, output, session) {
     else paste0("Résultat : ", nb, " jardins collectifs sont concernés.")
   })
   
+  
+  # ---- Carte ----
   output$map_scraping <- renderLeaflet({
-    leaflet() %>% addProviderTiles("CartoDB.Positron", options = providerTileOptions(opacity = 0.4))%>%
+    leaflet() %>% addProviderTiles("CartoDB.Positron", options = providerTileOptions(opacity = 0.4)) %>%
       setView(lng = 2.35, lat = 46.7, zoom = 5)
   })
+  
   
   observe({
     filtered_data <- r_get_jacob_word()
     proxy_map <- leafletProxy("map_scraping") %>% clearShapes() %>% clearMarkers()
+    
     if (is.null(filtered_data) || nrow(filtered_data) == 0) {
       output$no_result_text <- renderUI({
-        div(style="color:red; padding:10px;", "Aucun résultat pour ce terme. La recherche fonctionne par lemme : essayez le singulier (pour les noms) ou l’infinitif (pour les verbes)")
+        div(style = "color:red; padding:10px;",
+            "Aucun résultat pour ce terme. La recherche fonctionne par lemme : essayez le singulier ou l’infinitif.")
       })
       return()
     }
+    
     filtered_data <- ensure_cols(filtered_data)
     if (!all(c("lng","lat") %in% names(filtered_data))) filtered_data <- sf_add_coords(filtered_data)
     if (!(nrow(filtered_data) > 0 && all(c("lng","lat") %in% names(filtered_data)))) {
       output$no_result_text <- renderUI({
-        div(style="color:red; padding:10px;", "Résultats trouvés mais géométrie manquante.")
+        div(style = "color:red; padding:10px;", "Résultats trouvés mais géométrie manquante.")
       })
       return()
     }
+    
     output$no_result_text <- renderUI({ NULL })
-    
     bb <- sf::st_bbox(filtered_data)
-    if (nrow(filtered_data) == 1) {
-      proxy_map %>% flyTo(lng = filtered_data$lng[1], lat = filtered_data$lat[1], zoom = 14)
-    } else if (is.finite(bb$xmin) && is.finite(bb$ymin) && is.finite(bb$xmax) && is.finite(bb$ymax)) {
-      proxy_map %>% fitBounds(lng1 = bb$xmin, lat1 = bb$ymin, lng2 = bb$xmax, lat2 = bb$ymax)
-    }
+    proxy_map %>% fitBounds(lng1 = bb$xmin, lat1 = bb$ymin, lng2 = bb$xmax, lat2 = bb$ymax)
     
-    current_zoom <- input$map_scraping_zoom %||% 5
-    if (!is.null(current_zoom) && current_zoom <= 9) {
-      proxy_map %>% addCircleMarkers(
-        data = filtered_data,
-        lng = ~lng, lat = ~lat,
-        radius = ~pmax(occurrences, 1) ^ 0.5 * 6,
-        stroke = TRUE, color = ~highlight, weight = 1, opacity = 0.9,
-        fillColor = ~highlight, fillOpacity = 0.5,
-        popup = ~paste0("<strong>", id, "</strong>",
-                        "<br>Occurrences : ", occurrences,
-                        "<br>Spécificité : ", round(spec,2),
-                        "<br>Nom : ", name,
-                        "<br>Surface : ", surface_m2,
-                        "<br>Type : ", classe_mot)
-      )
-    } else {
-      proxy_map %>% addCircles(
-        data = filtered_data,
-        lng = ~lng, lat = ~lat,
-        radius = ~pmax(occurrences, 1) * 50,
-        color = ~highlight, opacity = 0.8,
-        fillColor = ~highlight, fillOpacity = 0.5,
-        popup = ~paste0("<strong>", id, "</strong>",
-                        "<br>Occurrences : ", occurrences,
-                        "<br>Spécificité : ", round(spec,2),
-                        "<br>Nom : ", name,
-                        "<br>Surface : ", surface_m2,
-                        "<br>Type : ", classe_mot)
-      )
-    }
+    proxy_map %>% addCircleMarkers(
+      data = filtered_data,
+      lng = ~lng, lat = ~lat,
+      radius = ~(log1p(occurrences) * 4),
+      stroke = TRUE, color = ~highlight, weight = 1, opacity = 0.9,
+      fillColor = ~highlight, fillOpacity = 0.5,
+      popup = ~paste0("<strong>", id, "</strong>",
+                      "<br>Occurrences : ", occurrences,
+                      "<br>Spécificité : ", round(spec,2),
+                      "<br>Nom : ", name,
+                      "<br>Type : ", classe_mot)
+    )
   })
   
+  
+  # ---- Graphique top 20 ----
   output$plot_occurrences <- renderPlot({
     req(input$do_search)
     word_used <- isolate(input$search_word)
     data <- r_get_jacob_word()
     if (is.null(data) || nrow(data) == 0) return(NULL)
     data <- ensure_cols(data)
-    top20 <- data %>% arrange(desc(occurrences)) %>% slice_head(n=20)
+    top20 <- data %>% arrange(desc(occurrences)) %>% slice_head(n = 20)
     ggplot(top20, aes(x = reorder(id, occurrences), y = occurrences)) +
       geom_col(fill = "lightblue") + coord_flip() +
-      labs(title=paste0("Les 20 jardins où le mot « ", word_used, " » apparaît le plus souvent"),
-           x="ID du jardin", y="Nombre d'occurrences") +
+      labs(title = paste0("Les 20 jardins où le mot « ", word_used, " » apparaît le plus souvent"),
+           x = "ID du jardin", y = "Nombre d'occurrences") +
       theme_minimal(base_size = 13)
   })
   
-  observeEvent(input$plot_click, {
-    data <- r_get_jacob_word()
-    if (is.null(data) || nrow(data) == 0) return()
-    data <- ensure_cols(data)
-    top20 <- data %>% arrange(desc(occurrences)) %>% slice_head(n = 20)
-    if (nrow(top20) == 0) return()
-    level_order <- levels(reorder(top20$id, top20$occurrences))
-    if (is.null(level_order)) {
-      ord <- order(top20$occurrences, decreasing = FALSE)
-      level_order <- unique(top20$id[ord])
-    }
-    y_idx <- suppressWarnings(round(input$plot_click$y))
-    if (is.na(y_idx) || y_idx < 1 || y_idx > length(level_order)) return()
-    id_clicked <- level_order[y_idx]
-    row_clicked <- which(top20$id == id_clicked)
-    if (length(row_clicked) == 0) return()
-    coords <- sf::st_coordinates(sf::st_geometry(top20[row_clicked[1], ]))
-    if (is.null(coords) || nrow(coords) == 0) return()
-    leafletProxy("map_scraping") %>%
-      flyTo(lng = coords[1, 1], lat = coords[1, 2], zoom = 16)
-  })
   
+  # --- Valeur réactive : texte du jardin sélectionné ---
+  r_selected_text <- reactiveVal(NULL)
+  
+  # --- Table principale sans les textes au départ ---
   output$table_scraping <- renderDataTable({
     data <- r_get_jacob_word()
     if (is.null(data) || nrow(data) == 0) return(data.frame())
-    data <- ensure_cols(data)
-    data <- dplyr::filter(data, occurrences > 0)
-    data <- data %>% dplyr::select(any_of(c(
-      "id","name","lemma","occurrences","spec","source_layer","surface_m2","classe_mot","texte"
-    )))
-    if (nrow(data) == 0) return(data[0, ])
-    df <- data %>% sf::st_drop_geometry()
-    DT::datatable(df, escape = FALSE, options = list(pageLength = 10, scrollX = TRUE))
+    df <- data %>%
+      sf::st_drop_geometry() %>%
+      dplyr::select(any_of(c(
+        "id","name","lemma","occurrences","spec","source_layer","surface_m2","classe_mot"
+      )))
+    datatable(
+      df,
+      selection = "single",
+      rownames = FALSE,   # ✅ ici, pas dans options
+      options = list(
+        pageLength = 10,
+        scrollX = TRUE
+      )
+    )
+  })
+  
+  # --- Quand on clique une ligne, on charge le texte associé ---
+  observeEvent(input$table_scraping_rows_selected, {
+    sel <- input$table_scraping_rows_selected
+    data <- r_get_jacob_word()
+    if (is.null(sel) || length(sel) == 0 || is.null(data) || nrow(data) == 0) return()
+    
+    row_sel <- data[sel, ]
+    gid <- row_sel$id[1]
+    w <- trimws(input$search_word %||% "")
+    if (is.null(gid) || gid == "") return()
+    
+    show_modal_spinner(
+      spin = "fading-circle",
+      text = sprintf("Chargement du texte pour le jardin %s...", gid),
+      color = "#8EBF8E"
+    )
+    
+    con <- connect_to_jacob()
+    
+    # 🔹 Requête SQL ciblée
+    sql_text <- sprintf("
+    SELECT filename, source_url, texte_nettoye
+    FROM %s
+    WHERE garden_id = '%s'
+  ", T_TEXT, sql_escape(gid))
+    
+    txt <- tryCatch(DBI::dbGetQuery(con, sql_text), error = function(e) data.frame())
+    
+    remove_modal_spinner()
+    
+    if (nrow(txt) == 0) {
+      showNotification("Aucun texte trouvé pour ce jardin.", type = "warning")
+      r_selected_text(NULL)
+      return()
+    }
+    
+    # 🔹 Mise en forme + surbrillance si demandé
+    forms_for_w <- get_lemma_forms(w, con)
+    txt <- txt %>%
+      mutate(texte_nettoye = if (isTRUE(input$highlight_texts))
+        .highlight_keyword(texte_nettoye, w, con = con, forms = forms_for_w)
+        else texte_nettoye)
+    
+    # 🔹 Génère un bloc HTML propre
+    html_text <- colorize_by_filename(txt, lemma = w, con = con, forms = forms_for_w)
+    r_selected_text(html_text)
+    
+    showNotification(sprintf("✅ Texte chargé pour le jardin %s", gid), type = "message")
+  })
+  
+  # --- Zone d'affichage du texte sélectionné ---
+  output$text_zone <- renderUI({
+    txt <- r_selected_text()
+    if (is.null(txt) || !nzchar(txt)) return(NULL)
+    div(
+      style = "background:white; padding:15px; border-radius:8px;
+           margin-top:15px; height:60vh; overflow-y:scroll;
+           box-shadow:0 2px 8px rgba(0,0,0,0.1); font-size:95%;",
+      HTML(txt)
+    )
+  })
+  
+  # ---- Bouton pour charger les textes (inchangé) ----
+  observeEvent(input$load_texts, {
+    data_base <- r_get_jacob_word()
+    if (is.null(data_base) || nrow(data_base) == 0) {
+      showNotification("Aucun résultat à enrichir avec les textes.", type = "warning")
+      return()
+    }
+    
+    w <- trimws(input$search_word %||% "")
+    con <- connect_to_jacob()
+    
+    gids <- unique(data_base$id)
+    if (length(gids) == 0) {
+      showNotification("Aucun jardin à traiter.", type = "message")
+      return()
+    }
+    
+    max_gids <- min(length(gids), 50)
+    gids <- gids[seq_len(max_gids)]
+    gids_sql <- paste(sprintf("'%s'", sql_escape(as.character(gids))), collapse = ",")
+    
+    show_modal_spinner(
+      spin = "fading-circle",
+      text = sprintf("Chargement des textes (%d jardins max)...", max_gids),
+      color = "#8EBF8E"
+    )
+    
+    sql_texts <- sprintf("
+    SELECT 
+      garden_id,
+      STRING_AGG(
+        COALESCE(filename, '') || ' — ' || 
+        COALESCE(source_url, '') || ' : ' || 
+        COALESCE(texte_nettoye, ''), 
+        E'\\n---\\n'
+      ) AS texte
+    FROM %s
+    WHERE garden_id IN (%s)
+    GROUP BY garden_id
+  ", T_TEXT, gids_sql)
+    
+    texts <- tryCatch(DBI::dbGetQuery(con, sql_texts), error = function(e) {
+      showNotification(paste("Erreur SQL :", e$message), type = "error")
+      data.frame()
+    })
+    
+    remove_modal_spinner()
+    
+    if (nrow(texts) == 0) {
+      showNotification("Aucun texte trouvé pour ces jardins.", type = "warning")
+      return()
+    }
+    
+    if (isTRUE(input$highlight_texts)) {
+      forms_for_w <- get_lemma_forms(w, con)
+      texts$texte <- vapply(texts$texte, function(t) {
+        .highlight_keyword(t, w, con = con, forms = forms_for_w)
+      }, character(1))
+    }
+    
+    updated <- data_base %>% left_join(texts, by = c("id" = "garden_id"))
+    r_data_with_texts(updated)
+    
+    showNotification(sprintf("✅ Textes ajoutés pour %d jardins.", nrow(texts)), type = "message")
   })
 }
 
