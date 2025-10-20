@@ -18,6 +18,10 @@ library(shinybusy)
 source("R/format_table.R")
 source("R/connect_to_jacob.R")   # connexion Postgres
 
+# --- Mot de passe pour afficher le texte (depuis .Renviron)
+TEXT_PWD <- Sys.getenv("SCRAPING_TEXT_PASSWORD", unset = "")
+
+
 # ------------------Wms
 WMS_BASE   <- "https://geoserver-dev.evs.ens-lyon.fr/geoserver/wms"
 WMS_LAYER  <- "jacob:jardin_pnt_infos"   # ← mets ici le nom exact publié
@@ -242,6 +246,82 @@ ui <- navbarPage(
 
 ############################################################################### ONGLET INTRO / ################################################################ 
 server <- function(input, output, session) {
+  
+  # ---- Verrou d'accès aux textes
+  pending_garden_id <- reactiveVal(NULL)    # mémorise l'ID cliqué en attente du mot de passe
+  
+  open_text_password_modal <- function() {
+    showModal(modalDialog(
+      title = "Accès restreint",
+      tagList(
+        p("Veuillez entrer le mot de passe pour afficher le texte :"),
+        passwordInput("pwd_input", label = NULL, placeholder = "Mot de passe"),
+        uiOutput("pwd_error_ui")  # ligne d’erreur si mauvais mot de passe
+      ),
+      footer = tagList(
+        modalButton("Annuler"),
+        actionButton("confirm_pwd", "Valider", class = "btn btn-primary")
+      ),
+      easyClose = FALSE
+    ))
+  }
+  output$pwd_error_ui <- renderUI({ NULL })
+  
+  # ---- Charge le texte d'un jardin et l'affiche dans text_zone
+  load_and_show_text <- function(gid) {
+    if (is.null(gid) || gid == "") return(invisible(NULL))
+    w <- trimws(input$search_word %||% "")
+    
+    show_modal_spinner(
+      spin = "fading-circle",
+      text = sprintf("Chargement du texte pour le jardin %s...", gid),
+      color = "#8EBF8E"
+    )
+    
+    con <- connect_to_jacob()
+    on.exit(try(DBI::dbDisconnect(con), silent = TRUE), add = TRUE)
+    
+    sql_text <- sprintf("
+    SELECT filename, source_url, texte_nettoye
+    FROM %s
+    WHERE garden_id = '%s'
+  ", T_TEXT, sql_escape(gid))
+    
+    txt <- tryCatch(DBI::dbGetQuery(con, sql_text), error = function(e) data.frame())
+    remove_modal_spinner()
+    
+    if (nrow(txt) == 0) {
+      showNotification("Aucun texte trouvé pour ce jardin.", type = "warning")
+      r_selected_text(NULL)
+      return(invisible(NULL))
+    }
+    
+    forms_for_w <- get_lemma_forms(w, con)
+    if ("highlight_texts" %in% names(input) && isTRUE(input$highlight_texts)) {
+      txt$texte_nettoye <- .highlight_keyword(txt$texte_nettoye, w, con = con, forms = forms_for_w)
+    }
+    
+    html_text <- colorize_by_filename(txt, lemma = w, con = con, forms = forms_for_w)
+    r_selected_text(html_text)
+    showNotification(sprintf("✅ Texte chargé pour le jardin %s", gid), type = "message")
+    invisible(NULL)
+  }
+  
+  observeEvent(input$confirm_pwd, {
+    req(input$pwd_input)
+    if (nzchar(TEXT_PWD) && identical(input$pwd_input, TEXT_PWD)) {
+      # pas de text_unlocked(TRUE) -> on reste "locké" pour la prochaine fois
+      gid <- isolate(pending_garden_id())
+      pending_garden_id(NULL)
+      removeModal()
+      if (!is.null(gid)) load_and_show_text(gid)
+    } else {
+      output$pwd_error_ui <- renderUI(
+        div(style="color:#c62828;margin-top:6px;", "Mot de passe incorrect.")
+      )
+    }
+  })
+  
   
   # ---- Classes sélectionnées ----
   r_get_selected_classes <- reactive({
@@ -604,55 +684,21 @@ server <- function(input, output, session) {
     )
   })
   
-  # --- Quand on clique une ligne, on charge le texte associé ---
+  # --- Quand on clique une ligne, on demande le mot de passe si nécessaire, puis on charge le texte ---
+  # --- À chaque clic de ligne : demander systématiquement le mot de passe
   observeEvent(input$table_scraping_rows_selected, {
-    sel <- input$table_scraping_rows_selected
+    sel  <- input$table_scraping_rows_selected
     data <- r_get_jacob_word()
     if (is.null(sel) || length(sel) == 0 || is.null(data) || nrow(data) == 0) return()
     
-    row_sel <- data[sel, ]
-    gid <- row_sel$id[1]
-    w <- trimws(input$search_word %||% "")
+    gid <- data$id[sel[1]]
     if (is.null(gid) || gid == "") return()
     
-    show_modal_spinner(
-      spin = "fading-circle",
-      text = sprintf("Chargement du texte pour le jardin %s...", gid),
-      color = "#8EBF8E"
-    )
-    
-    con <- connect_to_jacob()
-    
-    # 🔹 Requête SQL ciblée
-    sql_text <- sprintf("
-    SELECT filename, source_url, texte_nettoye
-    FROM %s
-    WHERE garden_id = '%s'
-  ", T_TEXT, sql_escape(gid))
-    
-    txt <- tryCatch(DBI::dbGetQuery(con, sql_text), error = function(e) data.frame())
-    
-    remove_modal_spinner()
-    
-    if (nrow(txt) == 0) {
-      showNotification("Aucun texte trouvé pour ce jardin.", type = "warning")
-      r_selected_text(NULL)
-      return()
-    }
-    
-    # 🔹 Mise en forme + surbrillance si demandé
-    forms_for_w <- get_lemma_forms(w, con)
-    txt <- txt %>%
-      mutate(texte_nettoye = if (isTRUE(input$highlight_texts))
-        .highlight_keyword(texte_nettoye, w, con = con, forms = forms_for_w)
-        else texte_nettoye)
-    
-    # 🔹 Génère un bloc HTML propre
-    html_text <- colorize_by_filename(txt, lemma = w, con = con, forms = forms_for_w)
-    r_selected_text(html_text)
-    
-    showNotification(sprintf("✅ Texte chargé pour le jardin %s", gid), type = "message")
+    pending_garden_id(gid)
+    open_text_password_modal()   # on ouvre la modale à chaque fois
   })
+  
+  
   
   # --- Zone d'affichage du texte sélectionné ---
   output$text_zone <- renderUI({
