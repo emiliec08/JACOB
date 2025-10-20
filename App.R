@@ -15,15 +15,13 @@ library(purrr)
 library(shinycssloaders) # pour le spinner de chargmt
 library(shinybusy)
 
-
-# Ces libs sont nécessaires si tu lances le proxy ici
-library(plumber)
-library(httr2)
-library(callr)
-
 source("R/format_table.R")
 source("R/connect_to_jacob.R")   # connexion Postgres
-source("R/geoserver_proxy.R")    # proxy GeoServer (Basic Auth)
+
+# ------------------Wms
+WMS_BASE   <- "https://geoserver-dev.evs.ens-lyon.fr/geoserver/wms"
+WMS_LAYER  <- "jacob:jardin_pnt_infos"   # ← mets ici le nom exact publié
+WMS_STYLE  <- ""                          # ou "jacob:mon_style" si tu veux forcer un SLD
 
 # ---------------- Helpers ----------------
 `%||%` <- function(a, b) if (is.null(a)) b else a
@@ -245,11 +243,6 @@ ui <- navbarPage(
 ############################################################################### ONGLET INTRO / ################################################################ 
 server <- function(input, output, session) {
   
-  # --- Démarre le proxy WMS (Basic Auth) ---
-  proxy <- geoserver_proxy_start()
-  onStop(function() geoserver_proxy_stop(proxy))
-  proxy_base <- proxy$base_url  # "http://127.0.0.1:PORT/wms"
-  
   # ---- Classes sélectionnées ----
   r_get_selected_classes <- reactive({
     selected_classes <- input$modgest
@@ -312,14 +305,14 @@ server <- function(input, output, session) {
     leaflet() %>%
       addProviderTiles("CartoDB.Positron", options = providerTileOptions(opacity = 0.4)) %>%
       addWMSTiles(
-        baseUrl = proxy_base,
-        layers  = "jardin_pnt_infos",   # nom sans 'jacob:'
+        baseUrl = WMS_BASE,
+        layers  = WMS_LAYER,   # nom sans 'jacob:'
         options = WMSTileOptions(
           version     = "1.1.1",
           format      = "image/png",
           transparent = TRUE,
           tiled       = TRUE,
-          styles      = ""                  # "point" mais la j'ai déjà créé un style sur QGIS SLD
+          styles      = WMS_STYLE                  # "point" mais la j'ai déjà créé un style sur QGIS SLD
         ),
         group = "WMS points"
       ) %>%
@@ -338,11 +331,10 @@ server <- function(input, output, session) {
     
     # Affiche un petit état au-dessus des filtres
     output$zoom_hint_intro <- renderUI({
-      if (z >= 12) {
+      if (z >= 12) 
         HTML("<div style='color:#02b808;margin-bottom:6px;'>🔓 Zoom ≥ 12 : filtres activés.</div>")
-      } else {
+      else 
         HTML("<div style='color:#9e9e9e;margin-bottom:6px;'>🔒 Zoomez pour utiliser les filtres. (≥ 12) </div>")
-      }
     })
     
     # Active/désactive les filtres selon le zoom
@@ -403,14 +395,19 @@ server <- function(input, output, session) {
       # -- afficher WMS, masquer Polygones (pas de légende ici)
       proxy_map %>% hideGroup("Polygones") %>% showGroup("WMS points") %>% clearControls()
       
-      # Légende WMS via GetLegendGraphic :
-      legend_url <- paste0(proxy_base,
-        "?service=WMS&request=GetLegendGraphic&format=image/png&layer=jardin_pnt_infos")
-      proxy_map %>% addControl(html = sprintf(
-        '<div style="background:white;padding:6px;border-radius:6px">
-           <b>Types de jardins</b><br><img src="%s" style="max-width:180px">
-         </div>', legend_url),
-        position = "bottomright")
+      # Légende WMS via GetLegendGraphic (WMS public : pas besoin de proxy)
+      legend_url <- paste0(
+        WMS_BASE,
+        "?service=WMS&request=GetLegendGraphic&format=image/png&layer=",
+        URLencode(WMS_LAYER, reserved = TRUE)
+      )
+      proxy_map %>% addControl(
+        html = sprintf(
+          '<div style="background:white;padding:6px;border-radius:6px">
+             <b>Types de jardins</b><br><img src="%s" style="max-width:180px">
+           </div>', legend_url),
+        position = "bottomright"
+      )
       
     } else {
       proxy_map %>% hideGroup("WMS points") %>% hideGroup("Polygones") %>% clearControls()
