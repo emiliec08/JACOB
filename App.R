@@ -1,7 +1,7 @@
 # -- Application Shiny : Onglets avec cartes, histogramme et légende dynamique
 options("shiny.port" = 3841, "shiny.host" = "0.0.0.0", "golem.app.prod" = TRUE)
 
-# ---------------- Libs ----------------
+#____________________________ library __________________________________________ 
 library(shiny)
 library(dplyr)
 library(ggplot2)
@@ -14,7 +14,7 @@ library(DBI)
 library(purrr)
 library(shinycssloaders) # pour le spinner de chargmt
 library(shinybusy)
-
+#____________________________ sources __________________________________________
 source("R/format_table.R")
 source("R/connect_to_jacob.R")   # connexion Postgres
 
