@@ -18,16 +18,18 @@ library(shinybusy)
 source("R/format_table.R")
 source("R/connect_to_jacob.R")   # connexion Postgres
 
+#____________________ gestion du mot de passe __________________________________
+
 # --- Mot de passe pour afficher le texte (depuis .Renviron)
 TEXT_PWD <- Sys.getenv("SCRAPING_TEXT_PASSWORD", unset = "")
 
-
-# ------------------Wms
+#_______________________________ wms ___________________________________________ 
 WMS_BASE   <- "https://geoserver-dev.evs.ens-lyon.fr/geoserver/wms"
 WMS_LAYER  <- "jacob:jardin_pnt_infos"   # ← mets ici le nom exact publié
 WMS_STYLE  <- ""                          # ou "jacob:mon_style" si tu veux forcer un SLD
 
-# ---------------- Helpers ----------------
+#____________________________ Helpers __________________________________________ 
+
 `%||%` <- function(a, b) if (is.null(a)) b else a
 sql_escape <- function(x) gsub("'", "''", x)
 
@@ -134,7 +136,7 @@ colorize_by_filename <- function(df_texts, lemma, con, forms = NULL) {
   paste(parts[parts != ""], collapse = "")
 }
 
-# --- Schéma & tables ---
+#____________________________ Schéma & tables __________________________________
 DB_SCHEMA <- '"Jacob_data"'
 T_POLY    <- paste0(DB_SCHEMA, '.jardin_poly')
 T_PNT     <- paste0(DB_SCHEMA, '.jardin_pnt_simple')             # (plus utilisé pour la carte intro)
@@ -143,6 +145,8 @@ T_SPEC    <- paste0(DB_SCHEMA, '.jardin_collectif_spec_n')  # clé = garden_id
 T_TEXT    <- paste0(DB_SCHEMA, '.jardins_texte_url')
 T_LEX     <- paste0(DB_SCHEMA, '.jardin_lexique_lemma')
 GEOM_COL  <- "geom"
+
+#____________________________ Palette onglet n1 _________________________________
 
 layers_info <- list(
   "JARDIN PARTAGÉ"      = "darkgreen",
@@ -155,6 +159,8 @@ layers_info <- list(
 )
 known_names <- names(layers_info)
 known_cols  <- unname(unlist(layers_info))
+
+#____________________________ Etiquette de la légende (onglet n1) _________________________________
 
 # Libellés personnalisés pour la légende (par valeur de classe_mot)
 legend_labels <- c(
@@ -174,7 +180,9 @@ ensure_cols <- function(df) {
   df
 }
 
-                                                                            # ---------------- UI ----------------
+#___________________________________________________________________________________ UI _________________________________________________________________________
+#________________________________________________________________________________________________________________________________________________________________
+
 ui <- navbarPage(
   title = div(
     img(src = "logo_jacob_clean.png", height = "50px", style = "max-height:100px;"),
@@ -242,11 +250,14 @@ ui <- navbarPage(
   )
 )
 
-                                                                  # ---------------- SERVER ----------------
+#___________________________________________________________________________________ SERVER _________________________________________________________________________
+#________________________________________________________________________________________________________________________________________________________________
 
-############################################################################### ONGLET INTRO / ################################################################ 
+
+############################################################################### ONGLET INTRO  ################################################################ 
 server <- function(input, output, session) {
   
+ ################################################# GESTION DU MDP DANS L'ONGLET 2 ###########################################################################
   # ---- Verrou d'accès aux textes
   pending_garden_id <- reactiveVal(NULL)    # mémorise l'ID cliqué en attente du mot de passe
   
@@ -321,6 +332,9 @@ server <- function(input, output, session) {
       )
     }
   })
+
+  ################################################## GESTION DU MDP DANS L'ONGLET 2 ###########################################################################
+  
   
   
   # ---- Classes sélectionnées ----
@@ -778,5 +792,7 @@ server <- function(input, output, session) {
     showNotification(sprintf("✅ Textes ajoutés pour %d jardins.", nrow(texts)), type = "message")
   })
 }
+
+#___________________________________________________________________________________ CONNECTION _________________________________________________________________________
 
 shinyApp(ui = ui, server = server)
