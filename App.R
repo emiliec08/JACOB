@@ -12,6 +12,8 @@ library(shinyjs)
 library(stringr)
 library(DBI)
 library(purrr)
+library(plotly)
+library(tidyr)
 library(shinycssloaders) # pour le spinner de chargmt
 library(shinybusy)
 #____________________________ sources __________________________________________
@@ -138,16 +140,18 @@ colorize_by_filename <- function(df_texts, lemma, con, forms = NULL) {
 
 #____________________________ Schéma & tables __________________________________
 DB_SCHEMA <- '"Jacob_data"'
-T_POLY    <- paste0(DB_SCHEMA, '.jardin_poly')
+T_POLY    <- paste0(DB_SCHEMA, '.jardin_poly_4326')
 T_PNT     <- paste0(DB_SCHEMA, '.jardin_pnt_simple')             # (plus utilisé pour la carte intro)
 T_INFOS   <- paste0(DB_SCHEMA, '.jardin_infos')
 T_SPEC    <- paste0(DB_SCHEMA, '.jardin_collectif_spec_n')  # clé = garden_id
 T_TEXT    <- paste0(DB_SCHEMA, '.jardins_texte_url')
 T_LEX     <- paste0(DB_SCHEMA, '.jardin_lexique_lemma')
+T_COSIA   <- paste0(DB_SCHEMA, '.cosia_fr_par_jardin_wide')
 GEOM_COL  <- "geom"
 
-#____________________________ Palette onglet n1 _________________________________
+#____________________________ PALETTES & LÉGENDES (Etiquette)  _________________________________
 
+# Palette principale : jardins
 layers_info <- list(
   "JARDIN PARTAGÉ"      = "darkgreen",
   "FERME URBAINE"       = "darkseagreen",
@@ -160,9 +164,8 @@ layers_info <- list(
 known_names <- names(layers_info)
 known_cols  <- unname(unlist(layers_info))
 
-#____________________________ Etiquette de la légende (onglet n1) _________________________________
 
-# Libellés personnalisés pour la légende (par valeur de classe_mot)
+# Libellés personnalisés pour la légende (par valeur de classe_mot) -> Légendes texte des types de jardins
 legend_labels <- c(
   "JARDIN PARTAGÉ"      = "Jardin partagé",
   "JARDIN PÉDAGOGIQUE"  = "Jardin pédagogique",
@@ -173,6 +176,30 @@ legend_labels <- c(
   "JARDIN À CLASSER"    = "À classer"
 )
 
+# Palette CoSIA : classes d’occupation du sol IGN
+cosia_palette <- list(
+  "Bâtiment"           = "#bf7378",
+  "Zone imperméable"   = "#a4a8b3",
+  "Zone perméable"     = "#917454",
+  "Piscine"            = "#7ecdf7",
+  "Serre"              = "#bae3d4",
+  "Sol nu"             = "#b5ae94",
+  "Surface eau"        = "#43729c",
+  "Neige"              = "#ebebfc",
+  "Conifère"           = "#376b34",
+  "Feuillu"            = "#5e8f39",
+  "Broussaille"        = "#b6bf4e",
+  "Pelouse"            = "#9bd175",
+  "Culture"            = "#d9cd66",
+  "Terre labourée"     = "#c79f56",
+  "Vigne"              = "#a88290",
+  "Autre"              = "#424242"
+)
+cosia_classes <- names(cosia_palette)
+cosia_cols    <- unname(unlist(cosia_palette))
+
+
+#  Fonction utilitaire (comme avant)
 ensure_cols <- function(df) {
   if (is.null(df)) return(df)
   if (!"occurrences" %in% names(df)) df$occurrences <- 0L
@@ -221,7 +248,22 @@ ui <- navbarPage(
                     h5("Affichage"),
                     checkboxInput("all_columns_1","Montrer toutes les variables", value=FALSE)
              ),
-             column(width=9, leafletOutput("map_intro", height = "50vh"))
+             column(width=9, leafletOutput("map_intro", height = "65vh"),
+                    #  Barre de recherche flottante
+                    absolutePanel(
+                      id = "search_panel",
+                      top = 10, left = 70, width = 250,
+                      draggable = TRUE,
+                      style = "background: rgba(255,255,255,0.9); padding: 10px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.3);",
+                      
+                      textInput(
+                        inputId = "search_jardin_id",
+                        label = NULL,
+                        placeholder = "🔍 ID du jardin (ex : 12118)"
+                      ),
+                      actionButton("search_jardin_btn", "Aller au jardin", icon = icon("magnifying-glass"), 
+                                   style = "width:100%; background-color:#e9f0eb; color:grey; border:none;")
+                    ))
            ),
            dataTableOutput("table_intro")
   ),
@@ -337,7 +379,7 @@ server <- function(input, output, session) {
   
   
   
-  # ---- Classes sélectionnées ----
+  #  Classes sélectionnées 
   r_get_selected_classes <- reactive({
     selected_classes <- input$modgest
     if ("Jardin partagé" %in% input$modgest) {
@@ -347,7 +389,8 @@ server <- function(input, output, session) {
     selected_classes
   })
   
-  # ---- POLYGONES (inchangé) ----
+  
+  # POLYGONES 
   filter_data <- reactive({
     bounds  <- input$map_intro_bounds
     zoom    <- input$map_intro_zoom %||% 1
@@ -379,6 +422,30 @@ server <- function(input, output, session) {
     out
   })
   
+  
+  #  Chargement CoSIA (% par jardin) 
+  get_cosia_composition <- function(jardin_id) {
+    con <- connect_to_jacob()
+    on.exit(DBI::dbDisconnect(con), add = TRUE)
+    
+    sql <- sprintf("SELECT * FROM %s WHERE id = '%s';", T_COSIA, as.integer(jardin_id))
+    df <- tryCatch(DBI::dbGetQuery(con, sql), error = function(e) NULL)
+    
+    if (is.null(df) || nrow(df) == 0) return(NULL)
+    
+    df_long <- df %>%
+      tidyr::pivot_longer(
+        cols = -id,
+        names_to = "classe",
+        values_to = "pourcentage"
+      ) %>%
+      dplyr::filter(pourcentage > 0) %>%
+      arrange(desc(pourcentage))
+    
+    df_long
+  }
+  
+  
   # ---- Palette polygones ----
   pal_poly <- reactive({
     data_poly <- filter_data()
@@ -397,7 +464,29 @@ server <- function(input, output, session) {
   # ---- Carte INTRO : init avec WMS (group) ----
   output$map_intro <- renderLeaflet({
     leaflet() %>%
+      # 🌿 Fond clair (par défaut)
       addProviderTiles("CartoDB.Positron", options = providerTileOptions(opacity = 0.4)) %>%
+      # 🛰️ Fond satellite Esri
+      addProviderTiles(
+        "Esri.WorldImagery",
+        group = "Satellite (Esri)"
+      ) %>%
+      
+      # ici : le fond CoSIA IGN
+    addTiles(
+      urlTemplate = paste0(
+        "https://data.geopf.fr/wmts?",
+        "SERVICE=WMTS&VERSION=1.0.0&REQUEST=GetTile",
+        "&LAYER=IGNF_COSIA_2021-2023",
+        "&STYLE=normal&TILEMATRIXSET=PM",
+        "&FORMAT=image/png&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}",
+        "&apikey=essentiels"
+      ),
+      options = tileOptions(opacity = 0.85, minZoom = 6, maxZoom = 19),
+      group = "CoSIA 2021–2023",
+      attribution = "CoSIA © IGN"
+    ) %>%
+      # ton WMS GeoServer déjà existant
       addWMSTiles(
         baseUrl = WMS_BASE,
         layers  = WMS_LAYER,   # nom sans 'jacob:'
@@ -411,17 +500,68 @@ server <- function(input, output, session) {
         group = "WMS points"
       ) %>%
       addLayersControl(
-        overlayGroups = c("WMS points","Polygones"),
+        baseGroups = c("Fond clair", "Satellite (Esri)"),
+        overlayGroups = c("CoSIA 2021–2023","WMS points","Polygones"),
         options = layersControlOptions(collapsed = TRUE)
       ) %>%
       hideGroup("Polygones") %>%
       setView(lng = 2.35, lat = 46.7, zoom = 5)
   })
   
-  # >>> Toggle WMS (zoom 3–11) vs Polygones (zoom >= 12)
+  # ---- Recherche d’un jardin par ID ----
+  observeEvent(input$search_jardin_btn, {
+    req(input$search_jardin_id)
+    
+    # 🔹 Nettoyage de l’entrée
+    jardin_id <- trimws(as.character(input$search_jardin_id))
+    
+    # 🔹 Récupère la géométrie du jardin dans la base
+    con <- connect_to_jacob()
+    on.exit(DBI::dbDisconnect(con), add = TRUE)
+    
+    sql <- sprintf('SELECT id, ST_X(ST_Centroid(geom)) AS lon, ST_Y(ST_Centroid(geom)) AS lat
+                  FROM "Jacob_data".jardin_poly_4326
+                  WHERE id = %s;', DBI::dbQuoteLiteral(con, jardin_id))
+    
+    coords <- tryCatch(DBI::dbGetQuery(con, sql), error = function(e) NULL)
+    if (is.null(coords) || nrow(coords) == 0) {
+      showNotification("Aucun jardin trouvé avec cet ID.", type = "warning")
+      return()
+    }
+    
+    # 🔹 Centre la carte sur le jardin
+    leafletProxy("map_intro") %>%
+      flyTo(lng = coords$lon[1], lat = coords$lat[1], zoom = 17) %>%
+      addPopups(
+        lng = coords$lon[1],
+        lat = coords$lat[1],
+        popup = sprintf("<b>Jardin %s</b>", jardin_id),
+        options = popupOptions(closeButton = TRUE)
+      )
+  })
+  
+  
+  
+  
+  
+  
+  
+  #  Toggle WMS (zoom 3–11) vs Polygones (zoom >= 12)
   observe({
     z <- input$map_intro_zoom %||% 1
     proxy_map <- leafletProxy("map_intro")
+    
+    # petite fonction locale pour la légende CoSIA
+    add_cosia_legend <- function(proxy) {
+      proxy %>% addLegend(
+        position = "bottomleft",
+        colors   = cosia_cols,
+        labels   = cosia_classes,
+        title    = "CoSIA (2021–2023)",
+        opacity  = 1
+      )
+    }
+    
     
     # Affiche un petit état au-dessus des filtres
     output$zoom_hint_intro <- renderUI({
@@ -447,20 +587,66 @@ server <- function(input, output, session) {
       # -- afficher Polygones, masquer WMS
       data_poly <- filter_data()
       proxy_map %>% hideGroup("WMS points") %>% showGroup("Polygones") %>% clearGroup("Polygones")
-      
       if (nrow(data_poly) > 0) {
         pal <- pal_poly()
         proxy_map %>% addPolygons(
           data = data_poly,
           fillColor = ~pal(classe_mot),
           color = "black", weight = 1, opacity = 1, fillOpacity = 0.5,
-          popup = ~paste0("<strong>", id, "</strong>",
-                          "<br>Type : ", classe_mot,
-                          "<br>Surface : ", surface_m2,
-                          "<br>Nom : ", name),
-          group = "Polygones"
+          
+          label = lapply(seq_len(nrow(data_poly)), function(i) {
+            row <- data_poly[i, ]
+            
+            # Si pas de nom → afficher "Jardin {id}"
+            nom_txt <- if (is.null(row$name) || is.na(row$name) || row$name == "") {
+              sprintf("Jardin %s", row$id)
+            } else {
+              htmltools::htmlEscape(as.character(row$name))
+            }
+            
+            # Type
+            classe_txt <- if (!is.null(row$classe_mot) && !is.na(row$classe_mot)) {
+              as.character(row$classe_mot)
+            } else {
+              "Non défini"
+            }
+            
+            # Surface
+            surf_txt <- if (!is.null(row$surface_m2) && !is.na(row$surface_m2)) {
+              sprintf("%.1f m²", as.numeric(row$surface_m2))
+            } else {
+              "non renseignée"
+            }
+            
+            htmltools::HTML(sprintf(
+              "<div style='font-size:13px; line-height:1.3;'>
+         <b>%s</b><br>
+         <span style='color:#333;'>Type : %s</span><br>
+         <span style='color:#333;'>Surface : %s</span>
+       </div>",
+              nom_txt, classe_txt, surf_txt
+            ))
+          }),
+          
+          labelOptions = labelOptions(
+            direction = "auto",
+            sticky = TRUE,
+            textsize = "13px",
+            style = list(
+              "color" = "#111",
+              "background" = "rgba(255,255,255,0.9)",
+              "border-radius" = "6px",
+              "padding" = "5px 7px",
+              "box-shadow" = "0 1px 3px rgba(0,0,0,0.25)"
+            )
+          ),
+          group = "Polygones",
+          layerId = ~id
         )
       }
+      
+      
+      
       
       # Légende pour polygones
       proxy_map %>% clearControls()
@@ -485,6 +671,9 @@ server <- function(input, output, session) {
           opacity  = 1)
       }
       
+      # re-ajoute la légende CoSIA (fixe)
+      add_cosia_legend(proxy_map)
+      
     } else if (z >= 3 && z <= 11) {
       # -- afficher WMS, masquer Polygones (pas de légende ici)
       proxy_map %>% hideGroup("Polygones") %>% showGroup("WMS points") %>% clearControls()
@@ -503,12 +692,72 @@ server <- function(input, output, session) {
         position = "bottomright"
       )
       
+      # ré-ajoute la légende CoSIA (fixe)
+      add_cosia_legend(proxy_map)
+      
     } else {
       proxy_map %>% hideGroup("WMS points") %>% hideGroup("Polygones") %>% clearControls()
+      # + même si on cache tout, on garde la légende CoSIA
+      add_cosia_legend(proxy_map)
     }
   })
   
-  # ---- Table intro
+  
+  # -- Double clic sur un polygone : afficher la composition CoSIA diagramme secteur
+  observeEvent(input$map_intro_shape_click, {
+    click <- input$map_intro_shape_click
+    if (is.null(click$id)) return()
+    jardin_id <- as.character(click$id)
+    df <- get_cosia_composition(jardin_id)
+    if (is.null(df)) {
+      showNotification(sprintf("Pas de données CoSIA pour le jardin %s.", jardin_id), type = "warning")
+      return()
+    }
+    # === Harmonisation des noms entre ta table et ta palette ===
+    normalize_label <- function(x) {
+      x <- iconv(x, to = "ASCII//TRANSLIT")        # enlève les accents
+      x <- gsub("_", " ", x)                       # enlève les underscores
+      x <- trimws(x)
+      x
+    }
+    # Palette sans accents pour comparaison
+    cosia_map_simplified <- setNames(
+      cosia_cols,
+      normalize_label(names(cosia_palette))
+    )
+    # Simplifie les noms de classe dans ton df pour les faire correspondre
+    df$classe_simpl <- normalize_label(df$classe)
+    # Attribution des couleurs en se basant sur les noms simplifiés
+    df$color <- cosia_map_simplified[df$classe_simpl]
+    df$color[is.na(df$color)] <- "#cccccc"  # couleur par défaut si pas trouvée
+    # Graphique circulaire Plotly
+    p <- plotly::plot_ly(
+      data = df,
+      labels = ~classe,
+      values = ~pourcentage,
+      type = "pie",
+      textinfo = "label+percent",
+      insidetextorientation = "radial",
+      marker = list(colors = df$color, line = list(color = "#FFFFFF", width = 1))
+    ) %>%
+      plotly::layout(
+        title = sprintf("Composition CoSIA – Jardin %s", jardin_id),
+        showlegend = TRUE
+      )
+    showModal(modalDialog(
+      title = sprintf("Composition du jardin à l'ID n°%s", jardin_id),
+      plotly::renderPlotly(p),
+      easyClose = TRUE,
+      size = "l"
+    ))
+  })
+  
+  
+  
+  
+  
+  
+  # -- Table intro (vu de la table attributaire)
   output$table_intro <- renderDataTable({
     data <- filter_data()
     if(!input$all_columns_1){
