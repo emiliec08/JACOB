@@ -111,6 +111,7 @@ build_regex_from_forms <- function(forms_vec) {
   )
 }
 
+# Vient colorier les textes (pour les diffs sources)
 colorize_by_filename <- function(df_texts, lemma, con, forms = NULL) {
   if (nrow(df_texts) == 0) return(NA_character_)
   cols <- c("#1f77b4", "#2ca02c", "#d62728", "#9467bd", "#8c564b")
@@ -211,6 +212,7 @@ ensure_cols <- function(df) {
 #________________________________________________________________________________________________________________________________________________________________
 
 ui <- navbarPage(
+  windowTitle = "JACOB – Observatoire",
   title = div(
     img(src = "logo_jacob_clean.png", height = "50px", style = "max-height:100px;"),
     style = "display:flex; justify-content:center; align-items:center; width:100%;"
@@ -289,17 +291,46 @@ ui <- navbarPage(
            ),
            dataTableOutput("table_scraping"),
            uiOutput("text_zone")
+  ),
+  
+  # Onglet 3 : Analyse par type
+  tabPanel("Statistique jardin",
+           fluidRow(
+             column(
+               width = 3,
+               h4("Paramètres"),
+               textInput("word_bytype", "Mot-clé (lemme)", value = "", placeholder = "ex : moustique"),
+               actionButton("run_bytype", "Analyser", icon = icon("chart-column")),
+               hr(),
+               checkboxGroupInput(
+                 "type_filter_bytype", "Filtrer les types (optionnel)",
+                 choices = names(legend_labels),   # mêmes clés que ta légende
+                 selected = names(legend_labels)
+               ),
+               checkboxInput("normalize_by_garden", "Afficher le taux (proportion de jardins) au lieu de la somme", value = FALSE),
+               checkboxInput("show_median", "Afficher la médiane d'occurrences (par jardin)", value = FALSE),
+               hr(),
+               downloadButton("dl_bytype_csv", "Télécharger CSV")
+             ),
+             column(
+               width = 9,
+               plotOutput("plot_bytype_main", height = "360px"),
+               uiOutput("bytype_note"),
+               conditionalPanel("input.show_median",
+                                plotOutput("plot_bytype_median", height = "300px")
+               ),
+               dataTableOutput("table_bytype")
+             )
+           )
   )
 )
 
 #___________________________________________________________________________________ SERVER _________________________________________________________________________
 #________________________________________________________________________________________________________________________________________________________________
 
-
-############################################################################### ONGLET INTRO  ################################################################ 
 server <- function(input, output, session) {
   
- ################################################# GESTION DU MDP DANS L'ONGLET 2 ###########################################################################
+  ################################################# GESTION DU MDP DANS L'ONGLET 2 ###########################################################################
   # ---- Verrou d'accès aux textes
   pending_garden_id <- reactiveVal(NULL)    # mémorise l'ID cliqué en attente du mot de passe
   
@@ -374,7 +405,7 @@ server <- function(input, output, session) {
       )
     }
   })
-
+  
   ################################################## GESTION DU MDP DANS L'ONGLET 2 ###########################################################################
   
   
@@ -465,28 +496,35 @@ server <- function(input, output, session) {
   output$map_intro <- renderLeaflet({
     leaflet() %>%
       # 🌿 Fond clair (par défaut)
-      addProviderTiles("CartoDB.Positron", options = providerTileOptions(opacity = 0.4)) %>%
-      # 🛰️ Fond satellite Esri
+      addProviderTiles(
+        "CartoDB.Positron",
+        options = providerTileOptions(opacity = 0.4, zIndex = 100),
+        group = "Fond clair"
+      ) %>%
+      
+      # 🛰️ Fond satellite
       addProviderTiles(
         "Esri.WorldImagery",
+        options = providerTileOptions(zIndex = 100),
         group = "Satellite (Esri)"
       ) %>%
       
-      # ici : le fond CoSIA IGN
-    addTiles(
-      urlTemplate = paste0(
-        "https://data.geopf.fr/wmts?",
-        "SERVICE=WMTS&VERSION=1.0.0&REQUEST=GetTile",
-        "&LAYER=IGNF_COSIA_2021-2023",
-        "&STYLE=normal&TILEMATRIXSET=PM",
-        "&FORMAT=image/png&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}",
-        "&apikey=essentiels"
-      ),
-      options = tileOptions(opacity = 0.85, minZoom = 6, maxZoom = 19),
-      group = "CoSIA 2021–2023",
-      attribution = "CoSIA © IGN"
-    ) %>%
-      # ton WMS GeoServer déjà existant
+      # le fond CoSIA IGN
+      addTiles(
+        urlTemplate = paste0(
+          "https://data.geopf.fr/wmts?",
+          "SERVICE=WMTS&VERSION=1.0.0&REQUEST=GetTile",
+          "&LAYER=IGNF_COSIA_2021-2023",
+          "&STYLE=normal&TILEMATRIXSET=PM",
+          "&FORMAT=image/png&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}",
+          "&apikey=essentiels"
+        ),
+        options = tileOptions(opacity = 0.85, minZoom = 6, maxZoom = 19, zIndex = 200),
+        group = "CoSIA 2021–2023",
+        attribution = "CoSIA © IGN"
+      ) %>%
+      
+      # Points WMS GeoServer
       addWMSTiles(
         baseUrl = WMS_BASE,
         layers  = WMS_LAYER,   # nom sans 'jacob:'
@@ -495,18 +533,39 @@ server <- function(input, output, session) {
           format      = "image/png",
           transparent = TRUE,
           tiled       = TRUE,
-          styles      = WMS_STYLE                  # "point" mais la j'ai déjà créé un style sur QGIS SLD
+          styles      = WMS_STYLE,# "point" mais la j'ai déjà créé un style sur QGIS SLD
+          zIndex      = 400 
         ),
         group = "WMS points"
       ) %>%
+      
       addLayersControl(
         baseGroups = c("Fond clair", "Satellite (Esri)"),
-        overlayGroups = c("CoSIA 2021–2023","WMS points","Polygones"),
+        overlayGroups = c("CoSIA 2021–2023","Polygones"),
         options = layersControlOptions(collapsed = TRUE)
       ) %>%
-      hideGroup("Polygones") %>%
+      
+      # ⚙️ État initial
+      showGroup("CoSIA 2021–2023") %>%
+      showGroup("Polygones") %>%   # pour qu'il soit coché dans le contrôle dès le départ
       setView(lng = 2.35, lat = 46.7, zoom = 5)
+    
   })
+  
+  ##### DES REACTIVES ET AUTRES
+  # État des couches cochées
+  is_poly_on <- reactive({ "Polygones" %in% (input$map_intro_groups %||% character(0)) })
+  is_cosia_on <- reactive({ "CoSIA 2021–2023" %in% (input$map_intro_groups %||% character(0)) })
+  
+  # --- états pour gérer la transition & le choix utilisateur
+  last_regime <- reactiveVal("low")      # "low" (<3), "mid" (3..11), "high" (>=12)
+  poly_override <- reactiveVal(FALSE)    # TRUE si l'utilisateur a (dé)coché à z>=12
+  
+  # on attend 150 ms sans nouveau changement avant de déclencher → un seul redraw quand le zoom se “pose”.
+  zoom_d    <- debounce(reactive(input$map_intro_zoom),   150)  # 150 ms
+  bounds_d  <- throttle(reactive(input$map_intro_bounds), 200)  # optionnel
+  ##### DES REACTIVES ET AUTRES
+  
   
   # ---- Recherche d’un jardin par ID ----
   observeEvent(input$search_jardin_btn, {
@@ -541,17 +600,33 @@ server <- function(input, output, session) {
   })
   
   
-  
-  
+  observeEvent(input$map_intro_groups, {
+    z <- input$map_intro_zoom %||% 1
+    # Si l'utilisateur touche aux groupes pendant qu'on est en "high", on gèle l'automatique
+    if (z >= 12) {
+      poly_override(TRUE)
+    }
+  }, ignoreInit = TRUE)
   
   
   
   #  Toggle WMS (zoom 3–11) vs Polygones (zoom >= 12)
-  observe({
-    z <- input$map_intro_zoom %||% 1
+ observe({
+  z <- zoom_d() %||% 1
     proxy_map <- leafletProxy("map_intro")
     
-    # petite fonction locale pour la légende CoSIA
+    # régime courant
+    regime <- if (z >= 12) "high" else if (z >= 3) "mid" else "low"
+    
+    # si on change de régime, on réinitialise l'override quand on QUITTE "high"
+    if (regime != last_regime()) {
+      if (last_regime() == "high" && regime != "high") {
+        poly_override(FALSE)  # reset : la prochaine montée pourra ré-auto-cocher
+      }
+      last_regime(regime)
+    }
+    
+    # helpers existants
     add_cosia_legend <- function(proxy) {
       proxy %>% addLegend(
         position = "bottomleft",
@@ -562,144 +637,112 @@ server <- function(input, output, session) {
       )
     }
     
-    
-    # Affiche un petit état au-dessus des filtres
+    # UI : message zoom + (dé)activation filtres
     output$zoom_hint_intro <- renderUI({
-      if (z >= 12) 
+      if (z >= 12)
         HTML("<div style='color:#02b808;margin-bottom:6px;'>🔓 Zoom ≥ 12 : filtres activés.</div>")
-      else 
+      else
         HTML("<div style='color:#9e9e9e;margin-bottom:6px;'>🔒 Zoomez pour utiliser les filtres. (≥ 12) </div>")
     })
+    if (z >= 12) { shinyjs::enable("modgest"); shinyjs::enable("sub_filter_classes_intro") }
+    else         { shinyjs::disable("modgest"); shinyjs::disable("sub_filter_classes_intro") }
     
-    # Active/désactive les filtres selon le zoom
-    if (z >= 12) {
-      shinyjs::enable("modgest")
-      shinyjs::enable("sub_filter_classes_intro")
-    } else {
-      shinyjs::disable("modgest")
-      shinyjs::disable("sub_filter_classes_intro")
-      # Option : vider les sélections quand c’est verrouillé
-      # updateCheckboxGroupInput(session, "modgest", selected = character(0))
-      # updateCheckboxGroupInput(session, "sub_filter_classes_intro", selected = character(0))
-    }
+    proxy_map %>% clearControls()
     
-    if (z >= 12) {
-      # -- afficher Polygones, masquer WMS
-      data_poly <- filter_data()
-      proxy_map %>% hideGroup("WMS points") %>% showGroup("Polygones") %>% clearGroup("Polygones")
-      if (nrow(data_poly) > 0) {
-        pal <- pal_poly()
-        proxy_map %>% addPolygons(
-          data = data_poly,
-          fillColor = ~pal(classe_mot),
-          color = "black", weight = 1, opacity = 1, fillOpacity = 0.5,
-          
-          label = lapply(seq_len(nrow(data_poly)), function(i) {
-            row <- data_poly[i, ]
-            
-            # Si pas de nom → afficher "Jardin {id}"
-            nom_txt <- if (is.null(row$name) || is.na(row$name) || row$name == "") {
-              sprintf("Jardin %s", row$id)
-            } else {
-              htmltools::htmlEscape(as.character(row$name))
-            }
-            
-            # Type
-            classe_txt <- if (!is.null(row$classe_mot) && !is.na(row$classe_mot)) {
-              as.character(row$classe_mot)
-            } else {
-              "Non défini"
-            }
-            
-            # Surface
-            surf_txt <- if (!is.null(row$surface_m2) && !is.na(row$surface_m2)) {
-              sprintf("%.1f m²", as.numeric(row$surface_m2))
-            } else {
-              "non renseignée"
-            }
-            
-            htmltools::HTML(sprintf(
-              "<div style='font-size:13px; line-height:1.3;'>
-         <b>%s</b><br>
-         <span style='color:#333;'>Type : %s</span><br>
-         <span style='color:#333;'>Surface : %s</span>
-       </div>",
-              nom_txt, classe_txt, surf_txt
-            ))
-          }),
-          
-          labelOptions = labelOptions(
-            direction = "auto",
-            sticky = TRUE,
-            textsize = "13px",
-            style = list(
-              "color" = "#111",
-              "background" = "rgba(255,255,255,0.9)",
-              "border-radius" = "6px",
-              "padding" = "5px 7px",
-              "box-shadow" = "0 1px 3px rgba(0,0,0,0.25)"
-            )
-          ),
-          group = "Polygones",
-          layerId = ~id
-        )
-      }
-      
-      
-      
-      
-      # Légende pour polygones
-      proxy_map %>% clearControls()
-      data_any <- data_poly
-      if (nrow(data_any) > 0 && "classe_mot" %in% names(data_any)) {
-        pal <- pal_poly()
-        classes_presentes <- sort(unique(data_any$classe_mot))
-        # 1) couleurs à partir de la palette
-        cols <- pal(classes_presentes)
-        # 2) étiquettes personnalisées (fallback = valeur brute si non mappée)
-        tab <- table(data_any$classe_mot)
-        labels <- vapply(classes_presentes, function(cl) {
-          base <- if (cl %in% names(legend_labels)) legend_labels[[cl]] else cl
-          sprintf("%s (%d)", base, as.integer(tab[[cl]] %||% 0))
-        }, character(1))
-        
-        proxy_map %>% addLegend(
-          position = "bottomright",
-          colors   = cols,
-          labels   = labels,
-          title    = "Types de jardins",
-          opacity  = 1)
-      }
-      
-      # re-ajoute la légende CoSIA (fixe)
-      add_cosia_legend(proxy_map)
-      
-    } else if (z >= 3 && z <= 11) {
-      # -- afficher WMS, masquer Polygones (pas de légende ici)
-      proxy_map %>% hideGroup("Polygones") %>% showGroup("WMS points") %>% clearControls()
-      
-      # Légende WMS via GetLegendGraphic (WMS public : pas besoin de proxy)
+    # --- régimes mid et low : WMS visible, Polygones cachés ---
+    if (regime == "mid") {
+      proxy_map %>% showGroup("WMS points") %>% hideGroup("Polygones")
+      # légende WMS
       legend_url <- paste0(
         WMS_BASE,
         "?service=WMS&request=GetLegendGraphic&format=image/png&layer=",
         URLencode(WMS_LAYER, reserved = TRUE)
       )
       proxy_map %>% addControl(
-        html = sprintf(
-          '<div style="background:white;padding:6px;border-radius:6px">
-             <b>Types de jardins</b><br><img src="%s" style="max-width:180px">
-           </div>', legend_url),
+        html = sprintf('<div style="background:white;padding:6px;border-radius:6px">
+                        <b>Types de jardins</b><br><img src="%s" style="max-width:180px">
+                      </div>', legend_url),
         position = "bottomright"
       )
-      
-      # ré-ajoute la légende CoSIA (fixe)
-      add_cosia_legend(proxy_map)
-      
-    } else {
-      proxy_map %>% hideGroup("WMS points") %>% hideGroup("Polygones") %>% clearControls()
-      # + même si on cache tout, on garde la légende CoSIA
-      add_cosia_legend(proxy_map)
+      if (is_cosia_on()) add_cosia_legend(proxy_map)
+      return(invisible())
     }
+    
+    if (regime == "low") {
+      proxy_map %>% hideGroup("WMS points") %>% hideGroup("Polygones")
+      if (is_cosia_on()) add_cosia_legend(proxy_map)
+      return(invisible())
+    }
+    
+    # --- régime high (z >= 12) : transition + respect du choix utilisateur ---
+    # 1) si l'utilisateur n'a PAS encore agi (override=FALSE) et que Polygones est décoché,
+    #    on coche automatiquement pour éviter le trou noir lorsque le WMS se masque.
+    if (!("Polygones" %in% (input$map_intro_groups %||% character(0))) && !poly_override()) {
+      proxy_map %>% showGroup("Polygones")
+    }
+    
+    # 2) on masque le WMS par défaut à ce zoom (mais cf. option ci-dessous)
+    proxy_map %>% hideGroup("WMS points")
+    
+    # 3) dessiner (ou non) les polygones selon l'état actuel de la case
+    if ("Polygones" %in% (input$map_intro_groups %||% character(0))) {
+      proxy_map %>% clearGroup("Polygones")
+      
+      data_poly <- filter_data()
+      if (nrow(data_poly) > 0) {
+        pal <- pal_poly()
+        proxy_map %>% addPolygons(
+          data = data_poly,
+          fillColor = ~pal(classe_mot),
+          color = "black", weight = 1, opacity = 1, fillOpacity = 0.5,
+          label = lapply(seq_len(nrow(data_poly)), function(i) {
+            row <- data_poly[i, ]
+            nom_txt   <- if (is.null(row$name) || is.na(row$name) || row$name == "") sprintf("Jardin %s", row$id) else htmltools::htmlEscape(as.character(row$name))
+            classe_txt<- if (!is.null(row$classe_mot) && !is.na(row$classe_mot)) as.character(row$classe_mot) else "Non défini"
+            surf_txt  <- if (!is.null(row$surface_m2) && !is.na(row$surface_m2)) sprintf("%.1f m²", as.numeric(row$surface_m2)) else "non renseignée"
+            htmltools::HTML(sprintf("<div style='font-size:13px; line-height:1.3;'><b>%s</b><br><span style='color:#333;'>Type : %s</span><br><span style='color:#333;'>Surface : %s</span></div>", nom_txt, classe_txt, surf_txt))
+          }),
+          labelOptions = labelOptions(
+            direction = "auto", sticky = TRUE, textsize = "13px",
+            style = list("color" = "#111", "background" = "rgba(255,255,255,0.9)",
+                         "border-radius" = "6px", "padding" = "5px 7px",
+                         "box-shadow" = "0 1px 3px rgba(0,0,0,0.25)")
+          ),
+          highlightOptions = highlightOptions(
+            color = "#d4af37", weight = 3, bringToFront = TRUE, opacity = 1, fillOpacity = 0.8
+          ),
+          group   = "Polygones",
+          layerId = ~id,
+          options = pathOptions(zIndex = 600)
+        )
+        
+        # légende polygones
+        classes_presentes <- sort(unique(data_poly$classe_mot))
+        cols <- pal(classes_presentes)
+        tab  <- table(data_poly$classe_mot)
+        labels <- vapply(classes_presentes, function(cl) {
+          base <- if (cl %in% names(legend_labels)) legend_labels[[cl]] else cl
+          sprintf("%s (%d)", base, as.integer(tab[[cl]] %||% 0))
+        }, character(1))
+        proxy_map %>% addLegend(
+          position = "bottomright",
+          colors   = cols,
+          labels   = labels,
+          title    = "Types de jardins",
+          opacity  = 1
+        )
+      } else {
+        # rien à dessiner -> on n'affiche pas de légende polygones
+      }
+    
+    } else {
+      # À z >= 12, l'utilisateur a décoché "Polygones" -> on ne montre rien (hors couches que tu gardes).
+      # On cache les points WMS et on vide le groupe polygones. MAIS (voir la suite)
+      proxy_map %>% hideGroup("WMS points") %>% clearGroup("Polygones")  #proxy_map %>% showGroup("WMS points") --> permet de ré-affiche le WMS si c'est mieux 
+    }
+    
+    
+    if (is_cosia_on()) add_cosia_legend(proxy_map)
   })
   
   
@@ -751,10 +794,6 @@ server <- function(input, output, session) {
       size = "l"
     ))
   })
-  
-  
-  
-  
   
   
   # -- Table intro (vu de la table attributaire)
@@ -1040,8 +1079,190 @@ server <- function(input, output, session) {
     
     showNotification(sprintf("✅ Textes ajoutés pour %d jardins.", nrow(texts)), type = "message")
   })
+  
+  
+  
+  
+  
+  
+  #   ###################################################################################### ONGLET 3 : ################################################################ 
+
+  
+  # Pré-remplir le champ avec le mot de l’onglet 2 si présent
+  observeEvent(input$search_word, {
+    if (nzchar(input$search_word) && !nzchar(input$word_bytype)) {
+      updateTextInput(session, "word_bytype", value = input$search_word)
+    }
+  }, ignoreInit = TRUE)
+  
+  # Requête agrégée : occurrences par classe_mot + stats
+  r_bytype <- eventReactive(input$run_bytype, {
+    w <- trimws(input$word_bytype %||% "")
+    if (!nzchar(w)) return(NULL)
+    
+    con <- connect_to_jacob()
+    on.exit(try(DBI::dbDisconnect(con), silent=TRUE), add=TRUE)
+    
+    # 1) Occurrences par jardin pour le lemme
+    sql_occ <- paste0("
+  WITH occ AS (
+    SELECT (s.garden_id)::text AS id, SUM(s.n)::bigint AS occ
+    FROM ", T_SPEC, " s
+    WHERE LOWER(TRIM(s.lemma)) = LOWER(TRIM(?word))
+    GROUP BY (s.garden_id)::text
+  )
+  SELECT
+    i.classe_mot,
+    COALESCE(o.occ, 0) AS occ,
+    (i.id)::text AS id
+  FROM ", T_INFOS, " i
+  LEFT JOIN occ o ON (o.id)::text = (i.id)::text
+")
+    
+    
+    q1 <- DBI::sqlInterpolate(con, sql_occ, word = w)
+    df <- tryCatch(DBI::dbGetQuery(con, q1), error = function(e) { message(e$message); NULL })
+    if (is.null(df) || nrow(df) == 0) return(NULL)
+    
+    # Nettoyage + mapping des labels jolis
+    df <- df %>%
+      dplyr::mutate(
+        classe_mot = as.character(classe_mot),
+        label_aff  = ifelse(classe_mot %in% names(legend_labels),
+                            legend_labels[classe_mot],
+                            classe_mot)
+      )
+    
+    # Filtre de types s’il y en a un
+    types_sel <- input$type_filter_bytype %||% character(0)
+    if (length(types_sel) > 0) {
+      # types_sel contient les clés des legend_labels => on remappe
+      df <- df %>% dplyr::filter(classe_mot %in% types_sel)
+    }
+    
+    # Agrégations
+    agg_sum <- df %>%
+      dplyr::group_by(classe_mot, label_aff) %>%
+      dplyr::summarise(
+        occ_total = sum(occ, na.rm = TRUE),
+        nb_jardins_total = dplyr::n(),
+        nb_jardins_mention = sum(occ > 0, na.rm = TRUE),
+        occ_median = stats::median(occ, na.rm = TRUE),
+        .groups = "drop"
+      ) %>%
+      dplyr::mutate(
+        taux_jardins = ifelse(nb_jardins_total > 0,
+                              nb_jardins_mention / nb_jardins_total,
+                              NA_real_)
+      )
+    
+    # Ordonner par métrique affichée (on le fera côté plot)
+    agg_sum
+  }, ignoreInit = TRUE)
+  
+  # Plot principal (somme des occurrences ou taux)
+  output$plot_bytype_main <- renderPlot({
+    d <- r_bytype()
+    if (is.null(d) || nrow(d) == 0) return(NULL)
+    
+    w <- trimws(input$word_bytype %||% "")
+    if (!nzchar(w)) w <- "mot"
+    
+    # Choix métrique
+    metric <- if (isTRUE(input$normalize_by_garden)) "taux_jardins" else "occ_total"
+    title  <- if (metric == "taux_jardins")
+      sprintf("Part des jardins mentionnant « %s » (par type)", w)
+    else
+      sprintf("Occurrences totales de « %s » (par type)", w)
+    
+    # Ordonner par valeur décroissante
+    d <- d %>% dplyr::arrange(dplyr::desc(.data[[metric]]))
+    
+    ggplot(d, aes(x = reorder(label_aff, .data[[metric]]), y = .data[[metric]])) +
+      geom_col() +
+      coord_flip() +
+      labs(
+        title = title,
+        x = "Type de jardin",
+        y = if (metric == "taux_jardins") "Proportion de jardins" else "Occurrences (somme)"
+      ) +
+      theme_minimal(base_size = 13)
+  })
+  
+  # Note sous le plot
+  output$bytype_note <- renderUI({
+    d <- r_bytype()
+    if (is.null(d)) return(NULL)
+    metric_txt <- if (isTRUE(input$normalize_by_garden)) {
+      "Le graphique montre la proportion de jardins, par type, qui contiennent ≥ 1 occurrence du mot."
+    } else {
+      "Le graphique montre la somme des occurrences du mot, agrégée par type de jardin."
+    }
+    HTML(sprintf("<div style='margin-top:6px;color:#555'>%s</div>", metric_txt))
+  })
+  
+  # Plot médiane par jardin (option)
+  output$plot_bytype_median <- renderPlot({
+    req(input$show_median)
+    d <- r_bytype()
+    if (is.null(d) || nrow(d) == 0) return(NULL)
+    
+    d <- d %>% dplyr::arrange(dplyr::desc(occ_median))
+    
+    ggplot(d, aes(x = reorder(label_aff, occ_median), y = occ_median)) +
+      geom_col() +
+      coord_flip() +
+      labs(
+        title = "Occurrences médianes (par jardin) par type",
+        x = "Type de jardin", y = "Médiane d'occurrences"
+      ) +
+      theme_minimal(base_size = 13)
+  })
+  
+  # Tableau récapitulatif + téléchargement
+  output$table_bytype <- renderDataTable({
+    d <- r_bytype()
+    if (is.null(d) || nrow(d) == 0) return(data.frame())
+    
+    out <- d %>%
+      dplyr::transmute(
+        `Type` = label_aff,
+        `Occurrences (somme)` = occ_total,
+        `Jardins avec ≥1 occurrence` = nb_jardins_mention,
+        `Jardins (total)` = nb_jardins_total,
+        `Proportion` = round(taux_jardins, 3),
+        `Médiane / jardin` = occ_median
+      )
+    datatable(out, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
+  })
+  
+  output$dl_bytype_csv <- downloadHandler(
+    filename = function() {
+      paste0("jacob_bytype_", gsub("\\s+", "_", tolower(trimws(input$word_bytype %||% "mot"))), ".csv")
+    },
+    content = function(file) {
+      d <- r_bytype()
+      if (is.null(d)) {
+        write.csv(data.frame(), file, row.names = FALSE, fileEncoding = "UTF-8")
+      } else {
+        out <- d %>%
+          dplyr::transmute(
+            type = label_aff,
+            occ_total,
+            nb_jardins_mention,
+            nb_jardins_total,
+            taux_jardins,
+            occ_median
+          )
+        write.csv(out, file, row.names = FALSE, fileEncoding = "UTF-8")
+      }
+    }
+  )
+  
 }
 
+
+#________________________________________________________________________________________________________________________________________________________________
 #___________________________________________________________________________________ CONNECTION _________________________________________________________________________
 
 shinyApp(ui = ui, server = server)
