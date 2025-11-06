@@ -363,7 +363,7 @@ ui <- navbarPage(
                selectInput(
                  "analysis_mode", "Mode d’analyse",
                  choices = c(
-                   "Par type"                                  = "type",
+                   "Par type de jardin"                                  = "type",
                    "Corrélation surface ↔ occurrences (nuage)" = "corr",
                   "Par densité communale"          = "dens",
                   "Par type de sol" = "sol"
@@ -371,7 +371,7 @@ ui <- navbarPage(
                  selected = "type"
                ),
                
-               # ---- NOUVEAU : bloc 'Mode (par type)' ----
+               #  bloc 'Mode (par type)' 
                conditionalPanel(
                  condition = "input.analysis_mode == 'type'",
                  radioButtons(
@@ -1636,7 +1636,11 @@ server <- function(input, output, session) {
       
       if (is.null(d) || !nrow(d)) return(NULL)
       
-      metric <- if ((input$analysis_metric %||% "sum") == "rate") "taux_jardins" else "occ_total"
+      metric <- if (mode == "type") {
+        if ((input$analysis_metric %||% "sum") == "rate") "taux_jardins" else "occ_total"
+      } else { # mode == "dens"
+        if ((input$dens_metric %||% "sum") == "rate") "taux_jardins" else "occ_total"
+      }
       
       title <- if (mode == "dens") {
         if (metric == "taux_jardins")
@@ -1645,12 +1649,16 @@ server <- function(input, output, session) {
           sprintf("Occurrences totales de « %s » (par densité de commune)", w)
       } else {
         if (metric == "taux_jardins")
-          sprintf("Part des jardins mentionnant « %s » (par type)", w)
+          sprintf("Part des jardins mentionnant « %s » (par type de jardin)", w)
         else
-          sprintf("Occurrences totales de « %s » (par type)", w)
+          sprintf("Occurrences totales de « %s » (par type de jardin)", w)
       }
       
       d <- d %>% dplyr::arrange(dplyr::desc(.data[[metric]]))
+      d <- d %>%
+        dplyr::mutate(
+          value = if (metric == "taux_jardins") .data[[metric]] * 100 else .data[[metric]]
+        )
       
       return(
         ggplot(d, aes(x = reorder(label_aff, .data[[metric]]), y = .data[[metric]])) +
@@ -1771,7 +1779,7 @@ server <- function(input, output, session) {
           `Occurrences (somme)`         = occ_total,
           `Jardins avec ≥1 occurrence`  = nb_jardins_mention,
           `Jardins (total)`             = nb_jardins_total,
-          `Proportion`                  = round(taux_jardins, 3),
+          `Proportion`                  = round(taux_jardins * 100, 1),
           `Médiane / jardin`            = occ_median
         )
       DT::datatable(out, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
