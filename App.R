@@ -290,7 +290,7 @@ ui <- navbarPage(
            tabsetPanel(id = "scraping_tabs",
                        
                        # ---- Sous-onglet 1 : Points (ton UI actuel inchangé) ----
-                       tabPanel("Points",
+                       tabPanel("Cercles proportionnels",
                                 fluidRow(
                                   column(width = 4,
                                          div(
