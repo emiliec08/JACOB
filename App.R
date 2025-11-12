@@ -151,7 +151,7 @@ T_SPEC    <- paste0(DB_SCHEMA, '.jardin_collectif_spec_n')  # clé = garden_id
 T_TEXT    <- paste0(DB_SCHEMA, '.jardins_texte_url')
 T_LEX     <- paste0(DB_SCHEMA, '.jardin_lexique_lemma')
 T_COSIA   <- paste0(DB_SCHEMA, '.cosia_fr_par_jardin_wide')
-T_COM   <- paste0(DB_SCHEMA, '.commune_infos')
+T_COM   <- paste0(DB_SCHEMA, '.commune_infos_poly_jardins')
 COMMUNE_KEY <- "CODGEO"  # colonne de jardin_infos qui contient le code commune (adapter si besoin)
 T_REG  <- paste0(DB_SCHEMA,'.regions')
 GEOM_COL  <- "geom"
@@ -214,6 +214,7 @@ ensure_cols <- function(df) {
   df
 }
 
+
 #___________________________________________________________________________________ UI _________________________________________________________________________
 #________________________________________________________________________________________________________________________________________________________________
 
@@ -224,14 +225,33 @@ ui <- navbarPage(
     style = "display:flex; justify-content:center; align-items:center; width:100%;"
   ),
   
-  header = shinyjs::useShinyjs(),  # <-- active shinyjs
+  # garde ceci tel quel
+  header = shinyjs::useShinyjs(),
   
-  # style gris
+  # ton autre tags$style “Griser…”
   tags$style(HTML("
-  /* Griser et bloquer le clic sur l’option 'JARDIN PARTAGÉ' quand on le souhaite */
-  #modgest .option-disabled label { opacity: 0.1; }
-  #modgest .option-disabled { pointer-events: none; }
-")),
+    #modgest .option-disabled label { opacity: 0.1; }
+    #modgest .option-disabled { pointer-events: none; }
+  ")),
+  
+  # ⬇️ CSS global (responsive + z-index des modales)
+  tags$head(
+    tags$style(HTML("
+      /* Responsive: panneau de recherche */
+      @media (max-width: 768px) {
+        #search_panel{
+          top: 12px !important;
+          right: 12px !important;
+          max-width: clamp(220px, 60vw, 420px) !important;
+        }
+      }
+
+      /* S'assure que les modales Shiny passent au-dessus des panneaux flottants */
+      .modal { z-index: 4000 !important; }
+      .modal-backdrop { z-index: 3990 !important; }
+    "))
+  ),
+
   
   
   
@@ -269,18 +289,25 @@ ui <- navbarPage(
                     #  Barre de recherche flottante
                     absolutePanel(
                       id = "search_panel",
-                      top = 10, left = 70, width = 250,
+                      top = 10, left = 200,               # ⇐ ancré à droite (plus de conflit avec la légende)
+                      width = NULL,                       # on laisse le CSS décider
                       draggable = TRUE,
-                      style = "background: rgba(255,255,255,0.9); padding: 10px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.3);",
-                      
-                      textInput(
-                        inputId = "search_jardin_id",
-                        label = NULL,
-                        placeholder = "🔍 ID du jardin (ex : 12118)"
+                      style = paste(
+                        "z-index:2000;",                  # ⇐ au-dessus des contrôles Leaflet
+                        "max-width:clamp(220px, 28vw, 360px);",  # ⇐ largeur responsive
+                        "background:rgba(255,255,255,0.92);",
+                        "padding:0.6rem 0.75rem;",        # ⇐ rem au lieu de px
+                        "border-radius:10px;",
+                        "box-shadow:0 2px 8px rgba(0,0,0,0.25);"
                       ),
-                      actionButton("search_jardin_btn", "Aller au jardin", icon = icon("magnifying-glass"), 
-                                   style = "width:100%; background-color:#e9f0eb; color:grey; border:none;")
-                    ))
+                      textInput("search_jardin_id", label = NULL,
+                                placeholder = "🔍 ID du jardin (ex : 12118)"),
+                      actionButton(
+                        "search_jardin_btn", "Aller au jardin", icon = icon("magnifying-glass"),
+                        style = "width:100%; background-color:#e9f0eb; color:#555; border:none;"
+                      )
+                    )
+             )
            ),
            dataTableOutput("table_intro")
   ),
@@ -363,40 +390,46 @@ ui <- navbarPage(
                selectInput(
                  "analysis_mode", "Mode d’analyse",
                  choices = c(
-                   "Par type de jardin"                                  = "type",
-                   "Corrélation surface ↔ occurrences (nuage)" = "corr",
-                  "Par densité communale"          = "dens",
-                  "Par type de sol" = "sol"
+                   "Par type de jardin"                   = "type",
+                   "Corrélation (nuage)"                  = "corr",
+                   "Par densité communale"                = "dens",
+                   "Par type de sol"                      = "sol"
                  ),
                  selected = "type"
-               ),
+               )
+               ,
                
                #  bloc 'Mode (par type)' 
                conditionalPanel(
-                 condition = "input.analysis_mode == 'type'",
-                 radioButtons(
-                   "analysis_metric", "Mode (par type)",
-                   choices  = c("Volume (somme d’occurrences)" = "sum",
-                                "Part de jardins (≥1 occurrence)" = "rate"),
-                   selected = "sum"
-                 ),
-                 radioButtons(
-                   "agg_level", "Niveau d’agrégation",
-                   choices = c("Grandes catégories" = "grand", "Sous-catégories" = "sous"),
-                   selected = "grand"
-                 ),
-                 checkboxInput("show_median", "Montrer les médianes par type", value = FALSE)
-               ),
-               
-               # Options spécifiques à la corrélation
-               conditionalPanel(
                  condition = "input.analysis_mode == 'corr'",
-                 checkboxInput("corr_only_pos", "Garder uniquement les jardins avec ≥1 occurrence", TRUE),
+                 
+                 # Choix de Y (surface, pauvreté, niveau de vie)
+                 selectInput(
+                   "corr_y", "Variable à corréler (Y) :",
+                   choices = c(
+                     "Surface (m²)"             = "surface",
+                     "Taux de pauvreté (%)"     = "pauvrete",
+                     "Niveau de vie médian (€)" = "niveauvie"
+                   ),
+                   selected = "surface"
+                 ),
+                 
+                 # ÉCHANTILLON : tous les jardins vs uniquement ceux avec ≥1 occurrence
+                 radioButtons(
+                   "corr_sample", "Échantillon pour la corrélation",
+                   choices = c(
+                     "Volume (somme d’occurrences) — tous les jardins" = "all",
+                     "Uniquement jardins avec ≥1 occurrence"           = "ge1"
+                   ),
+                   selected = "ge1"
+                 ),
+                 
+                 # méthode + options d’affichage
                  selectInput("corr_method", "Méthode de corrélation",
-                             choices = c("Pearson", "Spearman"), selected = "Pearson"),
+                             choices = c("Pearson", "Spearman", "Kendall"), selected = "Pearson"),
                  checkboxInput("corr_show_lm", "Afficher la droite de tendance (lm)", TRUE),
                  checkboxInput("corr_logx", "Échelle log sur les occurrences (X)", FALSE),
-                 checkboxInput("corr_logy", "Échelle log sur la surface (Y)", FALSE),
+                 checkboxInput("corr_logy", "Échelle log sur Y", FALSE),
                  checkboxInput("corr_trim", "Exclure extrêmes (au-delà du 99e centile)", TRUE)
                ),
                
@@ -1088,12 +1121,24 @@ server <- function(input, output, session) {
     if (is.null(data) || nrow(data) == 0) return(NULL)
     data <- ensure_cols(data)
     top20 <- data %>% arrange(desc(occurrences)) %>% slice_head(n = 20)
+    
+    # 🔤 Titre wrap (ajuste la largeur si besoin : 42–55)
+    title_txt <- stringr::str_wrap(
+      paste0("Les 20 jardins où le mot « ", word_used, " » apparaît le plus souvent"),
+      width = 48
+    )
+    
     ggplot(top20, aes(x = reorder(id, occurrences), y = occurrences)) +
-      geom_col(fill = "lightblue") + coord_flip() +
-      labs(title = paste0("Les 20 jardins où le mot « ", word_used, " » apparaît le plus souvent"),
-           x = "ID du jardin", y = "Nombre d'occurrences") +
-      theme_minimal(base_size = 13)
+      geom_col(fill = "lightblue") +
+      coord_flip(clip = "off") +  # ← évite le rognage
+      labs(title = title_txt, x = "ID du jardin", y = "Nombre d'occurrences") +
+      theme_minimal(base_size = 13) +
+      theme(
+        plot.title = element_text(hjust = 0, lineheight = 1.1, margin = margin(b = 8)),
+        plot.margin = margin(t = 14, r = 18, b = 8, l = 8)
+      )
   })
+  
   
   
   # --- Valeur réactive : texte du jardin sélectionné ---
@@ -1397,6 +1442,8 @@ server <- function(input, output, session) {
 
   # ---------- ONGLET 3 : Par type / Corrélation / Par densité / Par type de sol ----------
   
+  # ===============================[ ONGLET 3 : Analyse croisée ]===============================
+  
   # Pré-remplir le mot-clé depuis l’onglet 2 si dispo
   observeEvent(input$search_word, {
     if (nzchar(input$search_word) && !nzchar(input$word_bytype)) {
@@ -1412,7 +1459,7 @@ server <- function(input, output, session) {
     con <- connect_to_jacob()
     on.exit(try(DBI::dbDisconnect(con), silent = TRUE), add = TRUE)
     
-    # Occurrences par jardin
+    # Occurrences par jardin pour le lemme
     sql_occ <- sprintf("
     WITH occ AS (
       SELECT (s.garden_id)::text AS id, SUM(s.n)::bigint AS occ
@@ -1429,6 +1476,8 @@ server <- function(input, output, session) {
         (c.\"CODGEO\")::text    AS codgeo,
         c.\"LIBDENS7\"          AS libdens7,
         c.\"DENS7\"             AS dens7,
+        c.\"TP6021\"     AS taux_pauvrete,
+        c.\"Q221\" AS niveau_vie_median,
         CASE
           WHEN i.classe_mot IN ('JARDIN PÉDAGOGIQUE','JARDIN DE RUE',
                                 'JARDIN D''INSERTION','FERME URBAINE',
@@ -1461,6 +1510,8 @@ server <- function(input, output, session) {
       inf.surface_m2,
       inf.libdens7,
       inf.dens7,
+      inf.taux_pauvrete,
+      inf.niveau_vie_median,
       COALESCE(o.occ, 0) AS occ
     FROM infos inf
     LEFT JOIN occ o ON o.id = inf.id
@@ -1471,12 +1522,13 @@ server <- function(input, output, session) {
     
     df <- df %>%
       dplyr::mutate(
-        occ        = as.numeric(occ),
-        surface_m2 = suppressWarnings(as.numeric(surface_m2))
+        occ               = as.numeric(occ),
+        surface_m2        = suppressWarnings(as.numeric(surface_m2)),
+        taux_pauvrete     = suppressWarnings(as.numeric(taux_pauvrete)),
+        niveau_vie_median = suppressWarnings(as.numeric(niveau_vie_median))
       )
     
     ## ---- Agrégations par type ----
-    
     agg_grand <- df %>%
       dplyr::group_by(grand_type) %>%
       dplyr::summarise(
@@ -1484,8 +1536,7 @@ server <- function(input, output, session) {
         nb_jardins_total   = dplyr::n(),
         nb_jardins_mention = sum(occ > 0, na.rm = TRUE),
         taux_jardins       = ifelse(nb_jardins_total > 0,
-                                    nb_jardins_mention / nb_jardins_total,
-                                    NA_real_),
+                                    nb_jardins_mention / nb_jardins_total, NA_real_),
         occ_median         = stats::median(occ, na.rm = TRUE),
         .groups = "drop"
       ) %>%
@@ -1498,15 +1549,13 @@ server <- function(input, output, session) {
         nb_jardins_total   = dplyr::n(),
         nb_jardins_mention = sum(occ > 0, na.rm = TRUE),
         taux_jardins       = ifelse(nb_jardins_total > 0,
-                                    nb_jardins_mention / nb_jardins_total,
-                                    NA_real_),
+                                    nb_jardins_mention / nb_jardins_total, NA_real_),
         occ_median         = stats::median(occ, na.rm = TRUE),
         .groups = "drop"
       ) %>%
       dplyr::mutate(label_aff = sous_type)
     
     ## ---- Agrégations par densité communale ----
-    
     agg_dens <- df %>%
       dplyr::filter(!is.na(libdens7) & libdens7 != "") %>%
       dplyr::group_by(libdens7) %>%
@@ -1515,72 +1564,45 @@ server <- function(input, output, session) {
         nb_jardins_total   = dplyr::n(),
         nb_jardins_mention = sum(occ > 0, na.rm = TRUE),
         taux_jardins       = ifelse(nb_jardins_total > 0,
-                                    nb_jardins_mention / nb_jardins_total,
-                                    NA_real_),
+                                    nb_jardins_mention / nb_jardins_total, NA_real_),
         occ_median         = stats::median(occ, na.rm = TRUE),
         .groups = "drop"
       ) %>%
       dplyr::mutate(label_aff = libdens7)
     
-    ## ---- Agrégations par type de sol (CoSIA) ----
-    ## ---- Agrégations par type de sol (CoSIA) ----
-    # Jardins qui mentionnent le mot (occ > 0)
-    ids_pos <- df %>%
-      dplyr::filter(occ > 0) %>%
-      dplyr::pull(id)
-    
+    ## ---- Agrégations par type de sol (CoSIA) pour les jardins "positifs" ----
+    ids_pos <- df %>% dplyr::filter(occ > 0) %>% dplyr::pull(id)
     agg_sol <- NULL
-    
     if (length(ids_pos)) {
-      ids_sql <- paste(DBI::dbQuoteString(con, ids_pos), collapse = ",")
-      sql_cosia <- sprintf("SELECT * FROM %s WHERE id IN (%s);", T_COSIA, ids_sql)
-      
+      sql_cosia <- sprintf("SELECT * FROM %s WHERE id IN (%s);",
+                           T_COSIA, paste(DBI::dbQuoteString(con, ids_pos), collapse = ","))
       cosia_w <- tryCatch(DBI::dbGetQuery(con, sql_cosia), error = function(e) NULL)
       
       if (!is.null(cosia_w) && nrow(cosia_w) > 0) {
-        
-        # Colonnes numériques (pourcentages) uniquement, hors id
-        num_cols <- cosia_w %>%
-          dplyr::select(-id) %>%
-          dplyr::select(where(is.numeric)) %>%
-          names()
-        
+        num_cols <- cosia_w %>% dplyr::select(-id) %>% dplyr::select(where(is.numeric)) %>% names()
         if (length(num_cols) > 0) {
           df_sol <- tidyr::pivot_longer(
-            cosia_w,
-            cols      = dplyr::all_of(num_cols),
-            names_to  = "sol_class",
-            values_to = "value"
-          ) %>%
-            dplyr::filter(!is.na(value) & value >= 0) %>%
-            dplyr::mutate(
-              sol_class = gsub("_", " ", sol_class, fixed = TRUE)
-            )
-          
-          # Nombre total de jardins "positifs" (ayant le mot)
+            cosia_w, cols = dplyr::all_of(num_cols), names_to = "sol_class", values_to = "value"
+          ) %>% dplyr::filter(!is.na(value) & value >= 0) %>%
+            dplyr::mutate(sol_class = gsub("_", " ", sol_class, fixed = TRUE))
           total_j <- length(unique(df_sol$id))
-          
           agg_sol <- df_sol %>%
             dplyr::group_by(sol_class) %>%
             dplyr::summarise(
               pct_total          = sum(value, na.rm = TRUE),
-              nb_jardins_mention = sum(value > 0, na.rm = TRUE),  # = nb de jardins où ce sol > 0
+              nb_jardins_mention = sum(value > 0, na.rm = TRUE),
               .groups = "drop"
             )
-          
           total_all <- sum(agg_sol$pct_total, na.rm = TRUE)
-          
           if (total_all > 0 && total_j > 0) {
             agg_sol <- agg_sol %>%
               dplyr::mutate(
-                pct_share    = pct_total / total_all,                 # part du sol dans l'ensemble des sols (0–1)
-                part_jardins = nb_jardins_mention / total_j,          # part des jardins où ce sol est présent (0–1)
+                pct_share    = pct_total / total_all,
+                part_jardins = nb_jardins_mention / total_j,
                 label_aff    = sol_class
               ) %>%
               dplyr::arrange(dplyr::desc(pct_share))
-          } else {
-            agg_sol <- NULL
-          }
+          } else agg_sol <- NULL
         }
       }
     }
@@ -1594,51 +1616,68 @@ server <- function(input, output, session) {
     )
   }, ignoreInit = TRUE)
   
-  # ---- Plot principal ----
+  # ---- Plot principal (inclut Corrélation étendue) ----
   output$plot_bytype_main <- renderPlot({
     dat  <- r_bytype(); if (is.null(dat)) return(NULL)
     mode <- input$analysis_mode %||% "type"   # "type" | "dens" | "corr" | "sol"
     w    <- trimws(input$word_bytype %||% "mot")
     
-    ## 1) Corrélation surface ~ occurrences
+    ## === 1) Corrélation : X = occ, Y = surface/pauvreté/niveau de vie ===
     if (mode == "corr") {
       pts <- dat$points
-      if (isTRUE(input$corr_only_pos)) pts <- dplyr::filter(pts, occ > 0)
-      pts <- dplyr::filter(pts, !is.na(surface_m2), is.finite(surface_m2))
+      # Échantillon (all vs ge1)
+      if ((input$corr_sample %||% "ge1") == "ge1") pts <- dplyr::filter(pts, occ > 0)
       
+      # Choix de Y
+      y_col <- switch(input$corr_y,
+                      "surface"   = "surface_m2",
+                      "pauvrete"  = "taux_pauvrete",
+                      "niveauvie" = "niveau_vie_median",
+                      "surface_m2")
+      y_lab <- switch(input$corr_y,
+                      "surface"   = "Surface du jardin (m²)",
+                      "pauvrete"  = "Taux de pauvreté (%)",
+                      "niveauvie" = "Niveau de vie médian (€)",
+                      "Surface du jardin (m²)")
+      
+      pts <- pts %>% dplyr::filter(is.finite(occ),
+                                   !is.na(.data[[y_col]]), is.finite(.data[[y_col]]))
+      
+      # Trimming (99e)
       if (isTRUE(input$corr_trim) && nrow(pts) > 10) {
-        qx <- stats::quantile(pts$occ, probs = 0.99, na.rm = TRUE)
-        qy <- stats::quantile(pts$surface_m2, probs = 0.99, na.rm = TRUE)
-        pts <- dplyr::filter(pts, occ <= qx, surface_m2 <= qy)
+        qx <- stats::quantile(pts$occ,    probs = 0.99, na.rm = TRUE)
+        qy <- stats::quantile(pts[[y_col]], probs = 0.99, na.rm = TRUE)
+        pts <- dplyr::filter(pts, occ <= qx, .data[[y_col]] <= qy)
       }
       
-      p <- ggplot(pts, aes(x = occ, y = surface_m2)) +
-        geom_point(alpha = 0.5) +
+      p <- ggplot(pts, aes(x = occ, y = .data[[y_col]])) +
+        geom_point(alpha = 0.55, size = 1.6) +
         labs(
-          title = sprintf("Corrélation surface (m²) ↔ occurrences de « %s »", w),
-          x = "Occurrences du mot", y = "Surface du jardin (m²)"
+          title = sprintf("Corrélation %s ↔ occurrences de « %s »", y_lab, w),
+          x = "Occurrences du mot",
+          y = y_lab
         ) +
         theme_minimal(base_size = 13)
       
       if (isTRUE(input$corr_logx)) p <- p + scale_x_continuous(trans = "log1p")
       if (isTRUE(input$corr_logy)) p <- p + scale_y_continuous(trans = "log1p")
       if (isTRUE(input$corr_show_lm)) p <- p + geom_smooth(method = "lm", se = FALSE)
+      
       return(p)
     }
     
-    ## 2) Par type / Par densité
+    ## === 2) Par type / Par densité ===
     if (mode %in% c("type", "dens")) {
       d <- if (mode == "type") {
         if (identical(input$agg_level, "grand")) dat$grand else dat$sous
       } else {
         dat$dens
       }
-      
       if (is.null(d) || !nrow(d)) return(NULL)
       
       metric <- if (mode == "type") {
         if ((input$analysis_metric %||% "sum") == "rate") "taux_jardins" else "occ_total"
-      } else { # mode == "dens"
+      } else { # dens
         if ((input$dens_metric %||% "sum") == "rate") "taux_jardins" else "occ_total"
       }
       
@@ -1655,10 +1694,6 @@ server <- function(input, output, session) {
       }
       
       d <- d %>% dplyr::arrange(dplyr::desc(.data[[metric]]))
-      d <- d %>%
-        dplyr::mutate(
-          value = if (metric == "taux_jardins") .data[[metric]] * 100 else .data[[metric]]
-        )
       
       return(
         ggplot(d, aes(x = reorder(label_aff, .data[[metric]]), y = .data[[metric]])) +
@@ -1673,13 +1708,11 @@ server <- function(input, output, session) {
       )
     }
     
-    ## 3) Par type de sol
+    ## === 3) Par type de sol (CoSIA) ===
     if (mode == "sol") {
       d <- dat$sols
       if (is.null(d) || !nrow(d)) return(NULL)
-      
       d <- d %>% dplyr::arrange(dplyr::desc(pct_share))
-      
       return(
         ggplot(d, aes(x = reorder(label_aff, pct_share), y = pct_share)) +
           geom_col() +
@@ -1695,7 +1728,33 @@ server <- function(input, output, session) {
     }
   })
   
-  # ---- Note explicative ----
+  # ---- Box de corrélation (valeur de r) ----
+  output$corr_box <- renderUI({
+    req(input$analysis_mode == "corr")
+    dat <- r_bytype(); req(dat)
+    
+    pts <- dat$points
+    if ((input$corr_sample %||% "ge1") == "ge1") pts <- dplyr::filter(pts, occ > 0)
+    
+    y_col <- switch(input$corr_y,
+                    "surface"   = "surface_m2",
+                    "pauvrete"  = "taux_pauvrete",
+                    "niveauvie" = "niveau_vie_median",
+                    "surface_m2")
+    pts <- pts %>% dplyr::filter(!is.na(.data[[y_col]]), is.finite(.data[[y_col]]))
+    if (nrow(pts) < 3) return(NULL)
+    
+    meth <- tolower(input$corr_method %||% "pearson")
+    r <- suppressWarnings(cor(pts$occ, pts[[y_col]], method = meth, use = "complete.obs"))
+    
+    div(
+      style = "background:#f7f7f7;border-radius:8px;padding:10px;margin-top:6px;",
+      HTML(sprintf("<b>Méthode :</b> %s — <b>r</b> = %.3f (n = %d)",
+                   tools::toTitleCase(meth), r, nrow(pts)))
+    )
+  })
+  
+  # ---- Note explicative sous le graphe ----
   output$bytype_note <- renderUI({
     dat <- r_bytype(); if (is.null(dat)) return(NULL)
     mode <- input$analysis_mode %||% "type"
@@ -1706,13 +1765,15 @@ server <- function(input, output, session) {
         "Proportion de jardins d’un type où le mot apparaît au moins une fois (≥1)."
       else
         "Somme des occurrences du mot agrégée par type de jardin.",
-      "dens" = if ((input$analysis_metric %||% "sum") == "rate")
+      "dens" = if ((input$dens_metric %||% "sum") == "rate")
         "Proportion de jardins (par densité communale) où le mot apparaît (≥1)."
       else
         "Somme des occurrences agrégée par densité communale.",
-      "corr" = "Chaque point = un jardin. On compare le nombre d’occurrences au m² (options log, trimming, droite de tendance).",
-      "sol"  = "On regarde uniquement les jardins qui mentionnent le mot, on additionne leurs pourcentages CoSIA par type de sol, puis on renormalise à 100 % : on lit la part relative de chaque sol.",
-      "Somme des occurrences."
+      "corr" = if ((input$corr_sample %||% "ge1") == "ge1")
+        "Chaque point = un jardin (uniquement ceux avec ≥1 occurrence). X = volume d’occurrences; Y = variable choisie."
+      else
+        "Chaque point = un jardin (tous, zéros inclus). X = volume d’occurrences; Y = variable choisie.",
+      "sol"  = "Lecture des parts relatives de types de sol sur les jardins « positifs » (occ > 0)."
     )
     
     HTML(sprintf("<div style='margin-top:6px;color:#555'>%s</div>", txt))
@@ -1752,7 +1813,9 @@ server <- function(input, output, session) {
     mode <- input$analysis_mode %||% "type"
     
     if (mode == "corr") {
-      pts <- dat$points %>% dplyr::select(id, grand_type, sous_type, libdens7, surface_m2, occ)
+      pts <- dat$points %>%
+        dplyr::select(id, grand_type, sous_type, libdens7,
+                      surface_m2, taux_pauvrete, niveau_vie_median, occ)
       DT::datatable(pts, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
       
     } else if (mode == "sol") {
@@ -1767,6 +1830,7 @@ server <- function(input, output, session) {
           `Part des jardins (%)`       = round(part_jardins * 100, 1)
         )
       DT::datatable(out, options = list(pageLength = 15, scrollX = TRUE), rownames = FALSE)
+      
     } else {
       d <- if (mode == "type") {
         if (identical(input$agg_level, "grand")) dat$grand else dat$sous
@@ -1807,7 +1871,10 @@ server <- function(input, output, session) {
       dat <- r_bytype(); if (is.null(dat)) { write.csv(data.frame(), file); return() }
       mode <- input$analysis_mode %||% "type"
       if (mode == "corr") {
-        write.csv(dat$points, file, row.names = FALSE, fileEncoding = "UTF-8")
+        pts <- dat$points %>%
+          dplyr::select(id, grand_type, sous_type, libdens7,
+                        surface_m2, taux_pauvrete, niveau_vie_median, occ)
+        write.csv(pts, file, row.names = FALSE, fileEncoding = "UTF-8")
       } else if (mode == "dens") {
         write.csv(dat$dens, file, row.names = FALSE, fileEncoding = "UTF-8")
       } else if (mode == "sol") {
@@ -1818,6 +1885,8 @@ server <- function(input, output, session) {
       }
     }
   )
+  # ===========================[ FIN ONGLET 3 : Analyse croisée ]===========================
+  
   
   
 }
