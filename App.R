@@ -1,4 +1,4 @@
-# -- Application Shiny : Onglets avec cartes, histogramme et légende dynamique
+0.# -- Application Shiny : Onglets avec cartes, histogramme et légende dynamique
 options("shiny.port" = 3841, "shiny.host" = "0.0.0.0", "golem.app.prod" = TRUE)
 
 #____________________________ library __________________________________________ 
@@ -403,9 +403,9 @@ ui <- navbarPage(
                conditionalPanel(
                  condition = "input.analysis_mode == 'corr'",
                  
-                 # Choix de Y (surface, pauvreté, niveau de vie)
+                 # Choix de X (surface, pauvreté, niveau de vie)
                  selectInput(
-                   "corr_y", "Variable à corréler (Y) :",
+                   "corr_x", "variable indépendante (explicative) (x) :",
                    choices = c(
                      "Surface (m²)"             = "surface",
                      "Taux de pauvreté (%)"     = "pauvrete",
@@ -425,11 +425,9 @@ ui <- navbarPage(
                  ),
                  
                  # méthode + options d’affichage
-                 selectInput("corr_method", "Méthode de corrélation",
-                             choices = c("Pearson", "Spearman", "Kendall"), selected = "Pearson"),
                  checkboxInput("corr_show_lm", "Afficher la droite de tendance (lm)", TRUE),
-                 checkboxInput("corr_logx", "Échelle log sur les occurrences (X)", FALSE),
-                 checkboxInput("corr_logy", "Échelle log sur Y", FALSE),
+                 checkboxInput("corr_logy", "Échelle log sur les occurrences (Y)", FALSE),
+                 checkboxInput("corr_logx", "Échelle log sur X", FALSE),
                  checkboxInput("corr_trim", "Exclure extrêmes (au-delà du 99e centile)", TRUE)
                ),
                
@@ -553,6 +551,7 @@ server <- function(input, output, session) {
   })
   
   ################################################## GESTION DU MDP DANS L'ONGLET 2 ###########################################################################
+  ################################################## ONGLET 1 : INTRODUCTION ###########################################################################
   
   
   
@@ -618,6 +617,7 @@ server <- function(input, output, session) {
     if (is.na(sf::st_crs(out)) || sf::st_crs(out)$epsg != 4326) out <- sf::st_transform(out, 4326)
     out
   })
+  
   
   
   #  Chargement CoSIA (% par jardin) 
@@ -972,8 +972,9 @@ server <- function(input, output, session) {
     data %>% st_drop_geometry() %>% format_table()
   })
   
-  ###################################################################################### ONGLET SCRAPING : ################################################################ 
+  ###################################################################################### ONGLET N °2 SCRAPING : ################################################################ 
   
+  ################################################## ONGLET 1 INTRODUCTION ###########################################################################
   
   r_get_jacob_word <- eventReactive(input$do_search, {
     w <- trimws(input$search_word %||% "")
@@ -1626,45 +1627,53 @@ server <- function(input, output, session) {
     if (mode == "corr") {
       pts <- dat$points
       # Échantillon (all vs ge1)
-      if ((input$corr_sample %||% "ge1") == "ge1") pts <- dplyr::filter(pts, occ > 0)
+      if ((input$corr_sample %||% "all") == "all") pts <- pts
       
-      # Choix de Y
-      y_col <- switch(input$corr_y,
+      # Choix de X (variable) et label
+      x_col <- switch(input$corr_x,
                       "surface"   = "surface_m2",
                       "pauvrete"  = "taux_pauvrete",
                       "niveauvie" = "niveau_vie_median",
                       "surface_m2")
-      y_lab <- switch(input$corr_y,
+      x_lab <- switch(input$corr_x,
                       "surface"   = "Surface du jardin (m²)",
                       "pauvrete"  = "Taux de pauvreté (%)",
                       "niveauvie" = "Niveau de vie médian (€)",
                       "Surface du jardin (m²)")
       
-      pts <- pts %>% dplyr::filter(is.finite(occ),
-                                   !is.na(.data[[y_col]]), is.finite(.data[[y_col]]))
+      # Nettoyage
+      pts <- pts %>%
+        dplyr::filter(is.finite(occ),
+                      !is.na(.data[[x_col]]), is.finite(.data[[x_col]]))
       
-      # Trimming (99e)
+      # Trimming (99e centile) – sur X (variable) et Y (occ)
       if (isTRUE(input$corr_trim) && nrow(pts) > 10) {
-        qx <- stats::quantile(pts$occ,    probs = 0.99, na.rm = TRUE)
-        qy <- stats::quantile(pts[[y_col]], probs = 0.99, na.rm = TRUE)
-        pts <- dplyr::filter(pts, occ <= qx, .data[[y_col]] <= qy)
+        qx <- stats::quantile(pts[[x_col]], probs = 0.99, na.rm = TRUE)
+        qy <- stats::quantile(pts$occ,       probs = 0.99, na.rm = TRUE)
+        pts <- dplyr::filter(pts, .data[[x_col]] <= qx, occ <= qy)
       }
       
-      p <- ggplot(pts, aes(x = occ, y = .data[[y_col]])) +
+      p <- ggplot(pts, aes(x = .data[[x_col]], y = occ)) +
         geom_point(alpha = 0.55, size = 1.6) +
         labs(
-          title = sprintf("Corrélation %s ↔ occurrences de « %s »", y_lab, w),
-          x = "Occurrences du mot",
-          y = y_lab
+          title = sprintf("Corrélation (Spearman) — occurrences du mot « %s » (Y) ↔ %s (X)", w, x_lab),
+          x = x_lab,
+          y = "Occurrences du mot"
         ) +
         theme_minimal(base_size = 13)
       
       if (isTRUE(input$corr_logx)) p <- p + scale_x_continuous(trans = "log1p")
-      if (isTRUE(input$corr_logy)) p <- p + scale_y_continuous(trans = "log1p")
+      if (isTRUE(input$corr_logy)) {
+        p <- p + scale_y_continuous(trans = "log1p", limits = c(0, NA))
+      } else {
+        p <- p + scale_y_continuous(limits = c(0, NA))
+      }
+      
       if (isTRUE(input$corr_show_lm)) p <- p + geom_smooth(method = "lm", se = FALSE)
       
       return(p)
     }
+    
     
     ## === 2) Par type / Par densité ===
     if (mode %in% c("type", "dens")) {
@@ -1734,24 +1743,75 @@ server <- function(input, output, session) {
     dat <- r_bytype(); req(dat)
     
     pts <- dat$points
-    if ((input$corr_sample %||% "ge1") == "ge1") pts <- dplyr::filter(pts, occ > 0)
+    if ((input$corr_sample %||% "ge1") == "ge1") {
+      pts <- dplyr::filter(pts, occ > 0)
+    }
     
-    y_col <- switch(input$corr_y,
+    # X choisi (tu as renommé corr_y -> corr_x)
+    x_col <- switch(input$corr_x,
                     "surface"   = "surface_m2",
                     "pauvrete"  = "taux_pauvrete",
                     "niveauvie" = "niveau_vie_median",
                     "surface_m2")
-    pts <- pts %>% dplyr::filter(!is.na(.data[[y_col]]), is.finite(.data[[y_col]]))
+    
+    pts <- pts %>%
+      dplyr::filter(!is.na(.data[[x_col]]),
+                    is.finite(.data[[x_col]]),
+                    is.finite(occ))
+    
     if (nrow(pts) < 3) return(NULL)
     
-    meth <- tolower(input$corr_method %||% "pearson")
-    r <- suppressWarnings(cor(pts$occ, pts[[y_col]], method = meth, use = "complete.obs"))
+    # Test Spearman (ρ + p)
+    ct  <- suppressWarnings(cor.test(pts[[x_col]], pts$occ,
+                                     method = "spearman", exact = FALSE))
+    rho <- unname(ct$estimate)
+    p   <- ct$p.value
+    n   <- nrow(pts)
     
-    div(
-      style = "background:#f7f7f7;border-radius:8px;padding:10px;margin-top:6px;",
-      HTML(sprintf("<b>Méthode :</b> %s — <b>r</b> = %.3f (n = %d)",
-                   tools::toTitleCase(meth), r, nrow(pts)))
-    )
+    # Mise en forme
+    p_txt <- if (is.na(p)) "NA"
+    else if (p < 0.001) "< 0,001"
+    else formatC(p, format = "f", digits = 3, decimal.mark = ",")
+    
+    sens <- if (is.na(rho)) "—"
+    else if (rho > 0) "positive"
+    else if (rho < 0) "négative"
+    else "nulle"
+    
+    force <- if (is.na(rho)) "indéterminée" else {
+      a <- abs(rho)
+      if (a < 0.10) "négligeable" else
+        if (a < 0.30) "faible" else
+          if (a < 0.50) "modérée" else
+            if (a < 0.70) "forte" else "très forte"
+    }
+    
+    sig <- if (is.na(p)) "" else if (p < 0.001) "hautement significative"
+    else if (p < 0.05) "significative"
+    else "non significative"
+    
+    # Libellé variable X
+    x_lab <- switch(input$corr_x,
+                    "surface"   = "la surface du jardin",
+                    "pauvrete"  = "le taux de pauvreté",
+                    "niveauvie" = "le niveau de vie médian",
+                    "la variable sélectionnée")
+    
+    # Mot-clé recherché
+    mot <- htmltools::htmlEscape(trimws(input$word_bytype %||% ""))
+    
+    HTML(sprintf(
+      "<div style='background:#f7f7f7;border-radius:8px;padding:10px;margin-top:6px;'>
+       <div><b>Méthode :</b> Spearman</div>
+       <div><b>ρ</b> = %.3f &nbsp; | &nbsp; <b>p-value</b> = %s &nbsp; | &nbsp; <b>n</b> = %d</div>
+       <div style='margin-top:6px;color:#444'>
+         Interprétation : association <b>%s</b> <b>%s</b> entre %s et les occurrences du mot « <b>%s</b> ».
+         %s.
+       </div>
+     </div>",
+      rho, p_txt, n, sens, force, x_lab, mot,
+      if (sig == "") "" else paste0("La corrélation est <b>", sig, "</b>")
+    ))
   })
   
   # ---- Note explicative sous le graphe ----
@@ -1770,9 +1830,9 @@ server <- function(input, output, session) {
       else
         "Somme des occurrences agrégée par densité communale.",
       "corr" = if ((input$corr_sample %||% "ge1") == "ge1")
-        "Chaque point = un jardin (uniquement ceux avec ≥1 occurrence). X = volume d’occurrences; Y = variable choisie."
+        "Chaque point = un jardin (≥1 occurrence). X = variable choisie ; Y = occurrences du mot."
       else
-        "Chaque point = un jardin (tous, zéros inclus). X = volume d’occurrences; Y = variable choisie.",
+        "Chaque point = un jardin (zéros inclus). X = variable choisie ; Y = occurrences du mot.",
       "sol"  = "Lecture des parts relatives de types de sol sur les jardins « positifs » (occ > 0)."
     )
     
