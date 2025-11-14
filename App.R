@@ -406,8 +406,32 @@ ui <- navbarPage(
                    "Par type de sol"                      = "sol"
                  ),
                  selected = "type"
-               )
-               ,
+               ),
+               checkboxInput("show_global_compare",
+                             "Afficher la comparaison globale (tous les jardins)",
+                             value = TRUE),
+               # Niveau de détail des types de jardins
+               conditionalPanel(
+                 condition = "input.analysis_mode == 'type'",
+                 radioButtons(
+                   "agg_level", "Niveau de détail des types de jardins",
+                   choices = c(
+                     "Grandes catégories : partagés / familiaux / à classer" = "grand",
+                     "Tous les sous-types de jardins partagés"                = "sous"
+                   ),
+                   selected = "grand"
+                 ),
+                 radioButtons(
+                   "analysis_metric", "Variable affichée",
+                   choices = c(
+                     "Occurrences totales du mot"                = "sum",
+                     "Part des jardins mentionnant le mot (≥1)"  = "rate"
+                   ),
+                   selected = "sum"
+                 )
+               ),
+               
+               
                
                #  bloc 'Mode (par type)' 
                conditionalPanel(
@@ -446,7 +470,7 @@ ui <- navbarPage(
              
              column(
                width = 9,
-               plotOutput("plot_bytype_main", height = "440px"),
+               uiOutput("plots_bytype"),
                uiOutput("bytype_note"),
                
                conditionalPanel(
@@ -1647,6 +1671,126 @@ server <- function(input, output, session) {
   }, ignoreInit = TRUE)
   
   
+  ######### helpers
+  
+  .make_global_agg <- function(dat, mode, agg_level = "grand", con = NULL, T_COSIA = NULL) {
+    # dat = list(...) renvoyé par r_bytype ; mode ∈ {"type","dens","sol"}
+    stopifnot(is.list(dat), !is.null(mode))
+    
+    # ======================
+    # 1) PAR TYPE DE JARDIN
+    # ======================
+    if (mode == "type") {
+      if (agg_level == "sous") {
+        # Tous les sous-types (jardin partagé générique, de rue, etc. + familial + à classer)
+        d <- dat$points %>%
+          dplyr::filter(!is.na(sous_type) & sous_type != "") %>%
+          dplyr::group_by(sous_type) %>%
+          dplyr::summarise(
+            nb_jardins_total = dplyr::n(),
+            .groups = "drop"
+          ) %>%
+          dplyr::mutate(label_aff = sous_type)
+      } else {
+        # Grandes catégories : JARDIN PARTAGÉ / JARDIN FAMILIAL / JARDIN À CLASSER
+        d <- dat$points %>%
+          dplyr::filter(!is.na(grand_type) & grand_type != "") %>%
+          dplyr::group_by(grand_type) %>%
+          dplyr::summarise(
+            nb_jardins_total = dplyr::n(),
+            .groups = "drop"
+          ) %>%
+          dplyr::mutate(label_aff = grand_type)
+      }
+      
+      return(list(
+        df   = d,
+        y    = "nb_jardins_total",
+        ylab = "Nombre total de jardins (tous)",
+        title_suffix = "— Tous les jardins"
+      ))
+    }
+    
+    # ======================
+    # 2) PAR DENSITÉ COMMUNALE
+    # ======================
+    if (mode == "dens") {
+      d <- dat$points %>%
+        dplyr::filter(!is.na(libdens7) & libdens7 != "") %>%
+        dplyr::group_by(libdens7) %>%
+        dplyr::summarise(
+          nb_jardins_total = dplyr::n(),
+          .groups = "drop"
+        ) %>%
+        dplyr::mutate(label_aff = libdens7)
+      
+      return(list(
+        df   = d,
+        y    = "nb_jardins_total",
+        ylab = "Nombre total de jardins (tous)",
+        title_suffix = "— Tous les jardins"
+      ))
+    }
+    
+    # ======================
+    # 3) PAR TYPE DE SOL (CoSIA)
+    # ======================
+    if (mode == "sol") {
+      # Part des types de sol sur l’ensemble des jardins
+      ids_all <- unique(dat$points$id)
+      if (length(ids_all) == 0 || is.null(T_COSIA) || is.null(con)) {
+        return(list(df = NULL, y = NULL, ylab = "", title_suffix = ""))
+      }
+      
+      sql_cosia <- sprintf(
+        "SELECT * FROM %s WHERE id IN (%s);",
+        T_COSIA, paste(DBI::dbQuoteString(con, ids_all), collapse = ",")
+      )
+      cosia <- tryCatch(DBI::dbGetQuery(con, sql_cosia), error = function(e) NULL)
+      if (is.null(cosia) || !nrow(cosia)) {
+        return(list(df = NULL, y = NULL, ylab = "", title_suffix = ""))
+      }
+      
+      num_cols <- cosia %>%
+        dplyr::select(-id) %>%
+        dplyr::select(where(is.numeric)) %>%
+        names()
+      if (!length(num_cols)) {
+        return(list(df = NULL, y = NULL, ylab = "", title_suffix = ""))
+      }
+      
+      d <- tidyr::pivot_longer(
+        cosia,
+        cols      = dplyr::all_of(num_cols),
+        names_to  = "sol_class",
+        values_to = "value"
+      ) %>%
+        dplyr::filter(!is.na(value) & value >= 0) %>%
+        dplyr::mutate(sol_class = gsub("_", " ", sol_class, fixed = TRUE)) %>%
+        dplyr::group_by(sol_class) %>%
+        dplyr::summarise(
+          pct_total = sum(value, na.rm = TRUE),
+          .groups   = "drop"
+        ) %>%
+        dplyr::mutate(
+          label_aff = sol_class,
+          pct_share = pct_total / sum(pct_total, na.rm = TRUE)
+        )
+      
+      return(list(
+        df   = d,
+        y    = "pct_share",
+        ylab = "Part relative des sols (tous)",
+        title_suffix = "— Tous les jardins"
+      ))
+    }
+    
+    # Cas par défaut (sécurité)
+    list(df = NULL, y = NULL, ylab = "", title_suffix = "")
+  }
+  
+  
+  #help regression log
   .make_logistic_data <- function(df, x_col, trim99 = TRUE) {
     # garde X et occ valides
     df <- df %>%
@@ -1669,6 +1813,30 @@ server <- function(input, output, session) {
     stats::glm(stats::as.formula(paste0("pres ~ `", x_col, "`")), data = pts, family = stats::binomial())
   }
   
+  #########################################
+  
+  output$plots_bytype <- renderUI({
+    dat  <- r_bytype(); if (is.null(dat)) return(NULL)
+    mode <- input$analysis_mode %||% "type"
+    
+    # Corrélation/logistique : 1 seul graphe (le tien)
+    if (mode == "corr") {
+      return(div(style="display:flex; gap:16px; align-items:stretch;",
+                 div(style="flex:1;", plotOutput("plot_bytype_main", height = "440px"))))
+    }
+    
+    # Type / Densité / Sol : 1 ou 2 graphes
+    if (isTRUE(input$show_global_compare)) {
+      div(
+        style="display:flex; gap:16px; align-items:stretch; flex-wrap:wrap;",
+        div(style="flex:1; min-width:380px;", plotOutput("plot_bytype_main",   height = "440px")),
+        div(style="flex:1; min-width:380px;", plotOutput("plot_bytype_global", height = "440px"))
+      )
+    } else {
+      div(style="display:flex; gap:16px; align-items:stretch;",
+          div(style="flex:1;", plotOutput("plot_bytype_main", height = "440px")))
+    }
+  })
   
   
   # ---- Plot principal (régression logistique) ----
@@ -1795,6 +1963,79 @@ server <- function(input, output, session) {
       )
     }
   })
+  
+  output$plot_bytype_global <- renderPlot({
+    dat  <- r_bytype(); if (is.null(dat)) return(NULL)
+    mode <- input$analysis_mode %||% "type"
+    if (!mode %in% c("type","dens","sol")) return(NULL)
+    
+    # con/T_COSIA seulement pour "sol"
+    con <- NULL
+    if (mode == "sol") {
+      con <- connect_to_jacob()
+      on.exit(try(DBI::dbDisconnect(con), silent = TRUE), add = TRUE)
+    }
+    glob <- .make_global_agg(
+      dat,
+      mode,
+      agg_level = if (mode == "type") (input$agg_level %||% "grand") else "grand",
+      con = con,
+      T_COSIA = T_COSIA
+    )
+    d    <- glob$df
+    if (is.null(d) || !nrow(d)) return(NULL)
+    
+    # Aligner l’ordre des catégories sur le graphe de gauche
+    if (mode == "type") {
+      left <- if (identical(input$agg_level, "grand")) dat$grand else dat$sous
+      metric_left <- if ((input$analysis_metric %||% "sum") == "rate") "taux_jardins" else "occ_total"
+      if (!is.null(left) && nrow(left)) {
+        ord <- left %>% dplyr::arrange(dplyr::desc(.data[[metric_left]])) %>% dplyr::pull(label_aff)
+        d$label_aff <- factor(d$label_aff, levels = ord)
+      }
+    } else if (mode == "dens") {
+      left <- dat$dens
+      metric_left <- if ((input$dens_metric %||% "sum") == "rate") "taux_jardins" else "occ_total"
+      if (!is.null(left) && nrow(left)) {
+        ord <- left %>% dplyr::arrange(dplyr::desc(.data[[metric_left]])) %>% dplyr::pull(label_aff)
+        d$label_aff <- factor(d$label_aff, levels = ord)
+      }
+    } else if (mode == "sol") {
+      left <- dat$sols
+      if (!is.null(left) && nrow(left)) {
+        ord <- left %>% dplyr::arrange(dplyr::desc(pct_share)) %>% dplyr::pull(label_aff)
+        d$label_aff <- factor(d$label_aff, levels = ord)
+      }
+    }
+    
+    ycol <- glob$y
+    ylab <- glob$ylab
+    title_suffix <- glob$title_suffix
+    
+    if (mode == "sol") {
+      ggplot(d, aes(x = reorder(label_aff, .data[[ycol]]), y = .data[[ycol]])) +
+        geom_col() +
+        coord_flip() +
+        scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+        labs(
+          title = paste("Structure globale", title_suffix),
+          x = if (mode == "dens") "Densité de commune" else if (mode == "sol") "Type de sol (CoSIA)" else "Type de jardin",
+          y = ylab
+        ) +
+        theme_minimal(base_size = 13)
+    } else {
+      ggplot(d, aes(x = reorder(label_aff, .data[[ycol]]), y = .data[[ycol]])) +
+        geom_col() +
+        coord_flip() +
+        labs(
+          title = paste("Structure globale", title_suffix),
+          x = if (mode == "dens") "Densité de commune" else "Type de jardin",
+          y = ylab
+        ) +
+        theme_minimal(base_size = 13)
+    }
+  })
+  
   
   # ---- Box de régression logistique ----
   output$corr_box <- renderUI({
