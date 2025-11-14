@@ -258,32 +258,42 @@ ui <- navbarPage(
   # Onglet 1 : Introduction = WMS (3–11) puis Polygones (>= 12)
   tabPanel("Introduction",
            fluidRow(
-             column(width=3,
-                    # état du zoom
-                    htmlOutput("zoom_hint_intro"),
-                    checkboxGroupInput("modgest", "Mode de gestion",
-                                       choices = c(
-                                         "Jardin à classer" = "JARDIN À CLASSER",
-                                         "Jardin familial"  = "JARDIN FAMILIAL",
-                                         "Jardin partagé"   = "JARDIN PARTAGÉ"
-                                       ),
-                                       selected=c("JARDIN FAMILIAL", "JARDIN PARTAGÉ","JARDIN À CLASSER")),
-                    conditionalPanel(condition = "input.modgest.includes('JARDIN PARTAGÉ')",
-                                     fluidRow(column(width=10,offset=1,
-                                                     checkboxGroupInput("sub_filter_classes_intro", "sous-catégories",
-                                                                        choices = list(
-                                                                          "partagé"      = "JARDIN PARTAGÉ",
-                                                                          "pédagogique"  = "JARDIN PÉDAGOGIQUE",
-                                                                          "de rue"       = "JARDIN DE RUE",
-                                                                          "d'insertion"  = "JARDIN D'INSERTION",
-                                                                          "Ferme urbaine"= "FERME URBAINE"
-                                                                        ),
-                                                                        selected = c("FERME URBAINE","JARDIN D'INSERTION",
-                                                                                     "JARDIN DE RUE","JARDIN PARTAGÉ",
-                                                                                     "JARDIN PÉDAGOGIQUE"))
-                                     ))),
-                    h5("Affichage"),
-                    checkboxInput("all_columns_1","Montrer toutes les variables", value=FALSE)
+             column(
+               width = 3,
+               div(   # j'ai enfermé 'mode de gestion' et sous-ctgorie' dans une div 
+                 id = "intro-filters",
+                 style = "margin-left:120px;",   # ← décale légèrement vers la droite
+                 # état du zoom
+                 htmlOutput("zoom_hint_intro"),
+                 checkboxGroupInput("modgest", "Mode de gestion",
+                                    choices = c(
+                                      "Jardin à classer" = "JARDIN À CLASSER",
+                                      "Jardin familial"  = "JARDIN FAMILIAL",
+                                      "Jardin partagé"   = "JARDIN PARTAGÉ"
+                                    ),
+                                    selected = c("JARDIN FAMILIAL","JARDIN PARTAGÉ","JARDIN À CLASSER")
+                 ),
+                 conditionalPanel(
+                   condition = "input.modgest.includes('JARDIN PARTAGÉ')",
+                   fluidRow(column(
+                     width = 10, offset = 1,
+                     checkboxGroupInput("sub_filter_classes_intro", "sous-catégories",
+                                        choices = list(
+                                          "partagé"       = "JARDIN PARTAGÉ",
+                                          "pédagogique"   = "JARDIN PÉDAGOGIQUE",
+                                          "de rue"        = "JARDIN DE RUE",
+                                          "d'insertion"   = "JARDIN D'INSERTION",
+                                          "Ferme urbaine" = "FERME URBAINE"
+                                        ),
+                                        selected = c("FERME URBAINE","JARDIN D'INSERTION",
+                                                     "JARDIN DE RUE","JARDIN PARTAGÉ",
+                                                     "JARDIN PÉDAGOGIQUE")
+                     )
+                   ))
+                 ),
+                 h5("Affichage"),
+                 checkboxInput("all_columns_1","Montrer toutes les variables", value = FALSE)
+               )
              ),
              column(width=9, leafletOutput("map_intro", height = "65vh"),
                     #  Barre de recherche flottante
@@ -319,7 +329,7 @@ ui <- navbarPage(
                        # ---- Sous-onglet 1 : Points (ton UI actuel inchangé) ----
                        tabPanel("Cercles proportionnels",
                                 fluidRow(
-                                  column(width = 4,
+                                  column(width = 3,
                                          div(
                                            style = "display:flex; flex-direction:column; gap:2px; max-width:300px;",
                                            textInput("search_word", "Entrez un mot-clé (lemma) et appuyez sur Rechercher :", value = "", placeholder = "ex : rat"),
@@ -330,8 +340,8 @@ ui <- navbarPage(
                                          br(),
                                          plotOutput("plot_occurrences", height = "350px", click = "plot_click")
                                   ),
-                                  column(width = 8,
-                                         leafletOutput("map_scraping", height = "50vh"),
+                                  column(width = 9,
+                                         leafletOutput("map_scraping", height = "65vh"),
                                          uiOutput("no_result_text")
                                   )
                                 ),
@@ -391,7 +401,7 @@ ui <- navbarPage(
                  "analysis_mode", "Mode d’analyse",
                  choices = c(
                    "Par type de jardin"                   = "type",
-                   "Corrélation (nuage)"                  = "corr",
+                   "Régression logistique (présence)"                  = "corr",
                    "Par densité communale"                = "dens",
                    "Par type de sol"                      = "sol"
                  ),
@@ -405,7 +415,7 @@ ui <- navbarPage(
                  
                  # Choix de X (surface, pauvreté, niveau de vie)
                  selectInput(
-                   "corr_x", "variable indépendante (explicative) (x) :",
+                   "corr_x", "Variable explicative (X) :",
                    choices = c(
                      "Surface (m²)"             = "surface",
                      "Taux de pauvreté (%)"     = "pauvrete",
@@ -414,22 +424,11 @@ ui <- navbarPage(
                    selected = "surface"
                  ),
                  
-                 # ÉCHANTILLON : tous les jardins vs uniquement ceux avec ≥1 occurrence
-                 radioButtons(
-                   "corr_sample", "Échantillon pour la corrélation",
-                   choices = c(
-                     "Volume (somme d’occurrences) — tous les jardins" = "all",
-                     "Uniquement jardins avec ≥1 occurrence"           = "ge1"
-                   ),
-                   selected = "ge1"
-                 ),
-                 
-                 # méthode + options d’affichage
-                 checkboxInput("corr_show_lm", "Afficher la droite de tendance (lm)", TRUE),
-                 checkboxInput("corr_logy", "Échelle log sur les occurrences (Y)", FALSE),
-                 checkboxInput("corr_logx", "Échelle log sur X", FALSE),
-                 checkboxInput("corr_trim", "Exclure extrêmes (au-delà du 99e centile)", TRUE)
-               ),
+                 # Options d’affichage
+                 checkboxInput("corr_logx", "Échelle log sur X (log1p)", FALSE),
+                 checkboxInput("corr_trim", "Exclure extrêmes (au-delà du 99e centile) sur X", TRUE)
+               )
+               ,
                
                # Bloc d’options spécifiques au mode densité
                conditionalPanel(
@@ -593,30 +592,42 @@ server <- function(input, output, session) {
     classes <- r_get_selected_classes()
     if (is.null(bounds) || length(classes) == 0 || zoom < 12) return(empty_sf_4326())
     
+    show_all <- isTRUE(input$all_columns_1)  # ← tient compte du bouton
     con <- connect_to_jacob()
     env <- make_envelope_sql(bounds)
     classes_sql <- paste0("ARRAY[", paste(sprintf("'%s'", sql_escape(classes)), collapse=","), "]")
     
+    # 👉 si coché : toutes les colonnes de jardin_infos (i.*)
+    # sinon : sous-ensemble “léger”
+    if (show_all) {
+      select_infos <- "i.*"
+      select_id    <- ""               # i.id déjà présent dans i.*
+    } else {
+      select_infos <- paste(
+        "i.name, i.source_layer, i.surface_m2, i.classe_brute, i.classe_mot"
+      )
+      select_id    <- "i.id,"          # on expose id clairement
+    }
+    
     sql <- sprintf("
-      SELECT
-        p.id,
-        i.name,
-        i.source_layer,
-        i.surface_m2,
-        i.classe_brute,
-        i.classe_mot,
-        p.%s AS geom
-      FROM %s p
-      JOIN %s i ON i.id = p.id
-      WHERE i.classe_mot = ANY(%s)
-        AND ST_Intersects(p.%s, %s)
-      LIMIT 50000;", GEOM_COL, T_POLY, T_INFOS, classes_sql, GEOM_COL, env)
+    SELECT
+      %s
+      %s,
+      p.%s AS geom
+    FROM %s p
+    JOIN %s i ON i.id = p.id
+    WHERE i.classe_mot = ANY(%s)
+      AND ST_Intersects(p.%s, %s)
+    LIMIT 50000;",
+                   select_id, select_infos, GEOM_COL, T_POLY, T_INFOS, classes_sql, GEOM_COL, env
+    )
     
     out <- sf::st_read(con, query = sql, quiet = TRUE)
     if (nrow(out) == 0) return(empty_sf_4326())
     if (is.na(sf::st_crs(out)) || sf::st_crs(out)$epsg != 4326) out <- sf::st_transform(out, 4326)
     out
   })
+  
   
   
   
@@ -962,15 +973,38 @@ server <- function(input, output, session) {
   })
   
   
-  # -- Table intro (vu de la table attributaire)
+  # -- Table intro (vue table attributaire)
   output$table_intro <- renderDataTable({
     data <- filter_data()
-    if(!input$all_columns_1){
-      data <- data %>% select(any_of(c("id","name","source_layer","surface_m2","classe_brute","classe_mot")))
-    }
     if (nrow(data) == 0) return(data.frame())
-    data %>% st_drop_geometry() %>% format_table()
+    
+    df <- data %>% sf::st_drop_geometry()
+    
+    if (!isTRUE(input$all_columns_1)) {
+      # Cas habituel : peu de colonnes -> on garde ton format_table
+      df <- dplyr::select(df, any_of(c(
+        "id","name","source_layer","surface_m2","classe_brute","classe_mot"
+      )))
+      return(format_table(df))
+    } else {
+      # Cas "tout afficher" : on active juste le scroll horizontal, rien d'autre
+      return(DT::datatable(
+        df,
+        escape    = FALSE,
+        selection = "single",
+        rownames  = FALSE,
+        class     = "stripe hover compact",
+        options   = list(
+          scrollX     = TRUE,   # ⬅️ évite que ça déborde
+          autoWidth   = TRUE,
+          pageLength  = 10,
+          deferRender = TRUE
+        ),
+        width = "100%"
+      ))
+    }
   })
+  
   
   ###################################################################################### ONGLET N °2 SCRAPING : ################################################################ 
   
@@ -1439,12 +1473,7 @@ server <- function(input, output, session) {
   })
   
   
-  #   ###################################################################################### ONGLET 3 : ################################################################ 
-
-  # ---------- ONGLET 3 : Par type / Corrélation / Par densité / Par type de sol ----------
-  
-  # ===============================[ ONGLET 3 : Analyse croisée ]===============================
-  
+  #   ###################################################################################### ONGLET 3 : Analyse croisée ################################################################ 
   # Pré-remplir le mot-clé depuis l’onglet 2 si dispo
   observeEvent(input$search_word, {
     if (nzchar(input$search_word) && !nzchar(input$word_bytype)) {
@@ -1617,19 +1646,42 @@ server <- function(input, output, session) {
     )
   }, ignoreInit = TRUE)
   
-  # ---- Plot principal (inclut Corrélation étendue) ----
+  
+  .make_logistic_data <- function(df, x_col, trim99 = TRUE) {
+    # garde X et occ valides
+    df <- df %>%
+      dplyr::filter(is.finite(occ), !is.na(.data[[x_col]]), is.finite(.data[[x_col]]))
+    
+    # trimming 99e centile sur X uniquement (Y est binaire)
+    if (trim99 && nrow(df) > 10) {
+      qx <- stats::quantile(df[[x_col]], probs = 0.99, na.rm = TRUE)
+      df <- dplyr::filter(df, .data[[x_col]] <= qx)
+    }
+    
+    # variable binaire de présence
+    df$pres <- as.integer(df$occ >= 1)
+    df
+  }
+  
+  .fit_logistic <- function(pts, x_col) {
+    if (nrow(pts) < 10 || length(unique(pts$pres)) < 2) return(NULL)
+    # formule : pres ~ X
+    stats::glm(stats::as.formula(paste0("pres ~ `", x_col, "`")), data = pts, family = stats::binomial())
+  }
+  
+  
+  
+  # ---- Plot principal (régression logistique) ----
   output$plot_bytype_main <- renderPlot({
     dat  <- r_bytype(); if (is.null(dat)) return(NULL)
     mode <- input$analysis_mode %||% "type"   # "type" | "dens" | "corr" | "sol"
     w    <- trimws(input$word_bytype %||% "mot")
     
-    ## === 1) Corrélation : X = occ, Y = surface/pauvreté/niveau de vie ===
+    ## === 1) régression logistique : X = occ, Y = surface/pauvreté/niveau de vie ===
     if (mode == "corr") {
-      pts <- dat$points
-      # Échantillon (all vs ge1)
-      if ((input$corr_sample %||% "all") == "all") pts <- pts
+      pts <- dat$points  # on prend TOUS les jardins (présence/absence)
       
-      # Choix de X (variable) et label
+      # X (variable) et labels
       x_col <- switch(input$corr_x,
                       "surface"   = "surface_m2",
                       "pauvrete"  = "taux_pauvrete",
@@ -1640,39 +1692,46 @@ server <- function(input, output, session) {
                       "pauvrete"  = "Taux de pauvreté (%)",
                       "niveauvie" = "Niveau de vie médian (€)",
                       "Surface du jardin (m²)")
+      w <- trimws(input$word_bytype %||% "mot")
       
-      # Nettoyage
-      pts <- pts %>%
-        dplyr::filter(is.finite(occ),
-                      !is.na(.data[[x_col]]), is.finite(.data[[x_col]]))
+      # Préparer données (binariser Y, éventuel trimming X)
+      pts <- .make_logistic_data(pts, x_col, trim99 = isTRUE(input$corr_trim))
       
-      # Trimming (99e centile) – sur X (variable) et Y (occ)
-      if (isTRUE(input$corr_trim) && nrow(pts) > 10) {
-        qx <- stats::quantile(pts[[x_col]], probs = 0.99, na.rm = TRUE)
-        qy <- stats::quantile(pts$occ,       probs = 0.99, na.rm = TRUE)
-        pts <- dplyr::filter(pts, .data[[x_col]] <= qx, occ <= qy)
+      # Fit logistique
+      mod <- .fit_logistic(pts, x_col)
+      if (is.null(mod)) {
+        return(
+          ggplot() + theme_void() +
+            ggtitle("Régression logistique impossible : échantillon insuffisant ou Y constant (0/1).")
+        )
       }
       
-      p <- ggplot(pts, aes(x = .data[[x_col]], y = occ)) +
-        geom_point(alpha = 0.55, size = 1.6) +
+      # grille de prédiction pour la courbe en S
+      xmin <- min(pts[[x_col]], na.rm = TRUE)
+      xmax <- max(pts[[x_col]], na.rm = TRUE)
+      newdata <- data.frame(tmp_x = seq(xmin, xmax, length.out = 200))
+      names(newdata) <- x_col
+      newdata$pred <- stats::predict(mod, newdata = newdata, type = "response")
+      
+      # Plot : points (0/1) + sigmoïde
+      p <- ggplot(pts, aes(x = .data[[x_col]], y = pres)) +
+        geom_jitter(height = 0.06, alpha = 0.35, size = 1.5) +
+        geom_line(data = newdata, aes(y = pred), linewidth = 1.2) +
         labs(
-          title = sprintf("Corrélation (Spearman) — occurrences du mot « %s » (Y) ↔ %s (X)", w, x_lab),
+          title = sprintf("Régression logistique — présence du mot « %s »", w),
           x = x_lab,
-          y = "Occurrences du mot"
+          y = "Présence du mot"
         ) +
+        scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2)) +
         theme_minimal(base_size = 13)
       
       if (isTRUE(input$corr_logx)) p <- p + scale_x_continuous(trans = "log1p")
-      if (isTRUE(input$corr_logy)) {
-        p <- p + scale_y_continuous(trans = "log1p", limits = c(0, NA))
-      } else {
-        p <- p + scale_y_continuous(limits = c(0, NA))
-      }
       
-      if (isTRUE(input$corr_show_lm)) p <- p + geom_smooth(method = "lm", se = FALSE)
       
       return(p)
     }
+    
+    
     
     
     ## === 2) Par type / Par densité ===
@@ -1737,80 +1796,66 @@ server <- function(input, output, session) {
     }
   })
   
-  # ---- Box de corrélation (valeur de r) ----
+  # ---- Box de régression logistique ----
   output$corr_box <- renderUI({
     req(input$analysis_mode == "corr")
     dat <- r_bytype(); req(dat)
     
     pts <- dat$points
-    if ((input$corr_sample %||% "ge1") == "ge1") {
-      pts <- dplyr::filter(pts, occ > 0)
-    }
     
-    # X choisi (tu as renommé corr_y -> corr_x)
+    # X choisi
     x_col <- switch(input$corr_x,
                     "surface"   = "surface_m2",
                     "pauvrete"  = "taux_pauvrete",
                     "niveauvie" = "niveau_vie_median",
                     "surface_m2")
-    
-    pts <- pts %>%
-      dplyr::filter(!is.na(.data[[x_col]]),
-                    is.finite(.data[[x_col]]),
-                    is.finite(occ))
-    
-    if (nrow(pts) < 3) return(NULL)
-    
-    # Test Spearman (ρ + p)
-    ct  <- suppressWarnings(cor.test(pts[[x_col]], pts$occ,
-                                     method = "spearman", exact = FALSE))
-    rho <- unname(ct$estimate)
-    p   <- ct$p.value
-    n   <- nrow(pts)
-    
-    # Mise en forme
-    p_txt <- if (is.na(p)) "NA"
-    else if (p < 0.001) "< 0,001"
-    else formatC(p, format = "f", digits = 3, decimal.mark = ",")
-    
-    sens <- if (is.na(rho)) "—"
-    else if (rho > 0) "positive"
-    else if (rho < 0) "négative"
-    else "nulle"
-    
-    force <- if (is.na(rho)) "indéterminée" else {
-      a <- abs(rho)
-      if (a < 0.10) "négligeable" else
-        if (a < 0.30) "faible" else
-          if (a < 0.50) "modérée" else
-            if (a < 0.70) "forte" else "très forte"
-    }
-    
-    sig <- if (is.na(p)) "" else if (p < 0.001) "hautement significative"
-    else if (p < 0.05) "significative"
-    else "non significative"
-    
-    # Libellé variable X
-    x_lab <- switch(input$corr_x,
-                    "surface"   = "la surface du jardin",
-                    "pauvrete"  = "le taux de pauvreté",
-                    "niveauvie" = "le niveau de vie médian",
-                    "la variable sélectionnée")
-    
-    # Mot-clé recherché
+    x_lab_h <- switch(input$corr_x,
+                      "surface"   = "la surface du jardin",
+                      "pauvrete"  = "le taux de pauvreté",
+                      "niveauvie" = "le niveau de vie médian",
+                      "la variable sélectionnée")
     mot <- htmltools::htmlEscape(trimws(input$word_bytype %||% ""))
+    
+    # données prêtes pour la logistique
+    pts <- .make_logistic_data(pts, x_col, trim99 = isTRUE(input$corr_trim))
+    mod <- .fit_logistic(pts, x_col)
+    if (is.null(mod)) return(NULL)
+    
+    sm <- summary(mod)
+    # Coeff du prédicteur (2e ligne)
+    beta1 <- sm$coefficients[2, "Estimate"]
+    p_wald <- sm$coefficients[2, "Pr(>|z|)"]
+    OR <- exp(beta1)
+    
+    # Test global (rapport de vraisemblance)
+    an <- anova(mod, test = "Chisq")
+    p_lr <- tryCatch({
+      p <- tail(an[["Pr(>Chi)"]], 1)
+      if (length(p) == 0 || is.na(p)) NA_real_ else p
+    }, error = function(e) NA_real_)
+    
+    # formatages
+    fmt_p <- function(p) if (is.na(p)) "NA" else if (p < 0.001) "< 0,001" else
+      formatC(p, format = "f", digits = 3, decimal.mark = ",")
+    p_txt   <- fmt_p(p_wald)
+    p_lr_txt<- fmt_p(p_lr)
+    
+    sens <- if (is.na(beta1)) "—" else if (beta1 > 0) "positive" else if (beta1 < 0) "négative" else "nulle"
+    n <- nrow(pts)
+    prop_pos <- mean(pts$pres, na.rm = TRUE)
+    prop_txt <- paste0(round(prop_pos * 100, 1), " % de jardins mentionnent « ", mot, " ».")
     
     HTML(sprintf(
       "<div style='background:#f7f7f7;border-radius:8px;padding:10px;margin-top:6px;'>
-       <div><b>Méthode :</b> Spearman</div>
-       <div><b>ρ</b> = %.3f &nbsp; | &nbsp; <b>p-value</b> = %s &nbsp; | &nbsp; <b>n</b> = %d</div>
+       <div><b>Méthode :</b> Régression logistique (binomiale)</div>
+       <div><b>n</b> = %d &nbsp; | &nbsp; %s</div>
+       <div><b>Effet de %s :</b> OR = %.3f (β = %.3f) — p (Wald) = %s</div>
+       <div><b>Test global (LR) :</b> p = %s</div>
        <div style='margin-top:6px;color:#444'>
-         Interprétation : association <b>%s</b> <b>%s</b> entre %s et les occurrences du mot « <b>%s</b> ».
-         %s.
+         Interprétation : relation <b>%s</b> entre %s et la probabilité de mention du mot « <b>%s</b> ».
        </div>
      </div>",
-      rho, p_txt, n, sens, force, x_lab, mot,
-      if (sig == "") "" else paste0("La corrélation est <b>", sig, "</b>")
+      n, prop_txt, x_lab_h, OR, beta1, p_txt, p_lr_txt, sens, x_lab_h, mot
     ))
   })
   
@@ -1821,6 +1866,7 @@ server <- function(input, output, session) {
     
     txt <- switch(
       mode,
+      "corr" = "Chaque point = un jardin (0/1 : présence du mot). La courbe montre la probabilité estimée par une régression logistique.",
       "type" = if ((input$analysis_metric %||% "sum") == "rate")
         "Proportion de jardins d’un type où le mot apparaît au moins une fois (≥1)."
       else
@@ -1829,15 +1875,12 @@ server <- function(input, output, session) {
         "Proportion de jardins (par densité communale) où le mot apparaît (≥1)."
       else
         "Somme des occurrences agrégée par densité communale.",
-      "corr" = if ((input$corr_sample %||% "ge1") == "ge1")
-        "Chaque point = un jardin (≥1 occurrence). X = variable choisie ; Y = occurrences du mot."
-      else
-        "Chaque point = un jardin (zéros inclus). X = variable choisie ; Y = occurrences du mot.",
       "sol"  = "Lecture des parts relatives de types de sol sur les jardins « positifs » (occ > 0)."
     )
     
     HTML(sprintf("<div style='margin-top:6px;color:#555'>%s</div>", txt))
   })
+  
   
   # ---- Médianes (pour type & dens) ----
   output$plot_bytype_median <- renderPlot({
@@ -1945,10 +1988,6 @@ server <- function(input, output, session) {
       }
     }
   )
-  # ===========================[ FIN ONGLET 3 : Analyse croisée ]===========================
-  
-  
-  
 }
 
 #________________________________________________________________________________________________________________________________________________________________
