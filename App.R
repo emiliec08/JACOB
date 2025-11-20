@@ -29,10 +29,10 @@ source("R/connect_to_jacob.R")   # connexion Postgres
 TEXT_PWD <- Sys.getenv("SCRAPING_TEXT_PASSWORD", unset = "")
 
 #_______________________________ wms ___________________________________________ 
-WMS_BASE   <- "https://geoserver-dev.evs.ens-lyon.fr/geoserver/wms"
+WMS_BASE   <- "https://geoserver.ens-lyon.fr/geoserver/jacob/wms"
 WMS_LAYER  <- "jacob:jardin_pnt_infos"   # ← mets ici le nom exact publié
 WMS_STYLE  <- ""                          # ou "jacob:mon_style"
-
+WMS_LAYER_COMMUNES <-"jacob:commune_infos_poly_jardins"
 #____________________________ Helpers __________________________________________ 
 
 `%||%` <- function(a, b) if (is.null(a)) b else a
@@ -341,7 +341,7 @@ ui <- navbarPage(
                                          plotOutput("plot_occurrences", height = "350px", click = "plot_click")
                                   ),
                                   column(width = 9,
-                                         leafletOutput("map_scraping", height = "65vh"),
+                                         leafletOutput("map_scraping", height = "80vh"),
                                          uiOutput("no_result_text")
                                   )
                                 ),
@@ -653,8 +653,6 @@ server <- function(input, output, session) {
   })
   
   
-  
-  
   #  Chargement CoSIA (% par jardin) 
   get_cosia_composition <- function(jardin_id) {
     con <- connect_to_jacob()
@@ -740,15 +738,31 @@ server <- function(input, output, session) {
         group = "WMS points"
       ) %>%
       
+      # Communes WMS GeoServer
+      addWMSTiles(
+        baseUrl = WMS_BASE,
+        layers  = WMS_LAYER_COMMUNES,
+        options = WMSTileOptions(
+          version     = "1.1.1",
+          format      = "image/png",
+          transparent = TRUE,
+          tiled       = TRUE,
+          styles      = "",# "point" mais la j'ai déjà créé un style sur QGIS SLD
+          zIndex      = 300 
+        ),
+        group = "Communes"
+      ) %>%
+      
       addLayersControl(
         baseGroups = c("Fond clair", "Satellite (Esri)"),
-        overlayGroups = c("CoSIA 2021–2023","Polygones"),
+        overlayGroups = c("CoSIA 2021–2023", "Communes","Polygones"),
         options = layersControlOptions(collapsed = TRUE)
       ) %>%
       
       # ⚙️ État initial
       showGroup("CoSIA 2021–2023") %>%
       showGroup("Polygones") %>%   # pour qu'il soit coché dans le contrôle dès le départ
+      hideGroup("Communes") %>%
       setView(lng = 2.35, lat = 46.7, zoom = 5)
     
   })
@@ -757,6 +771,8 @@ server <- function(input, output, session) {
   # État des couches cochées
   is_poly_on <- reactive({ "Polygones" %in% (input$map_intro_groups %||% character(0)) })
   is_cosia_on <- reactive({ "CoSIA 2021–2023" %in% (input$map_intro_groups %||% character(0)) })
+  is_communes_on <- reactive({"Communes" %in% (input$map_intro_groups %||% character(0))})
+  
   
   # --- états pour gérer la transition & le choix utilisateur
   last_regime <- reactiveVal("low")      # "low" (<3), "mid" (3..11), "high" (>=12)
@@ -827,7 +843,7 @@ server <- function(input, output, session) {
       last_regime(regime)
     }
     
-    # helpers existants
+    # helpers legende COSIA
     add_cosia_legend <- function(proxy) {
       proxy %>% addLegend(
         position = "bottomleft",
@@ -837,6 +853,28 @@ server <- function(input, output, session) {
         opacity  = 1
       )
     }
+    
+    # helpers legende communes
+    add_communes_legend <- function(proxy) {
+      groups <- input$map_intro_groups %||% character(0)
+      if (!("Communes" %in% groups)) return(proxy)  # seulement si la couche est cochée
+      
+      legend_url <- paste0(
+        WMS_BASE,
+        "?service=WMS&request=GetLegendGraphic&format=image/png&layer=",
+        URLencode(WMS_LAYER_COMMUNES, reserved = TRUE)
+      )
+      
+      proxy %>% addControl(
+        html = sprintf('
+      <div style="background:white;padding:6px;border-radius:6px;">
+        <b>Communes</b><br>
+        <img src="%s" style="max-width:180px;">
+      </div>', legend_url),
+        position = "topright"
+      )
+    }
+    
     
     # UI : message zoom + (dé)activation filtres
     output$zoom_hint_intro <- renderUI({
@@ -866,12 +904,14 @@ server <- function(input, output, session) {
         position = "bottomright"
       )
       if (is_cosia_on()) add_cosia_legend(proxy_map)
+      if (is_communes_on()) add_communes_legend(proxy_map)
       return(invisible())
     }
     
     if (regime == "low") {
       proxy_map %>% hideGroup("WMS points") %>% hideGroup("Polygones")
       if (is_cosia_on()) add_cosia_legend(proxy_map)
+      if (is_communes_on()) add_communes_legend(proxy_map)
       return(invisible())
     }
     
@@ -944,6 +984,7 @@ server <- function(input, output, session) {
     
     
     if (is_cosia_on()) add_cosia_legend(proxy_map)
+    if (is_communes_on()) add_communes_legend(proxy_map)
   })
   
   
@@ -994,6 +1035,61 @@ server <- function(input, output, session) {
       easyClose = TRUE,
       size = "l"
     ))
+  })
+  
+  # --  clic sur WMS communes : affiche nom, nb_jardins et type de densité
+  observeEvent(input$map_intro_click, {
+    click <- input$map_intro_click
+    req(click$lng,click$lat)
+    
+    #info commune que si elle est coché
+    groups <- input$map_intro_groups %||% character(0)
+    if (!("Communes" %in% groups)) return()
+    
+    #postgres
+    con<- connect_to_jacob()
+    on.exit(try(DBI::dbDisconnect(con),silent=TRUE), add = TRUE)
+    
+    sql <- sprintf("
+      SELECT
+        \"LIBGEO\",
+        \"LIBDENS7\",
+        nb_jardins
+      FROM %s
+      WHERE ST_Contains(
+        %s.geom,
+        ST_SetSRID(ST_Point(%f,%f),4326)
+      )
+      LIMIT 1;
+    ", T_COM, T_COM, click$lng, click$lat)
+    
+    info <- tryCatch(DBI::dbGetQuery(con, sql), error=function(e)NULL)
+    if (is.null(info) || nrow(info) == 0) {
+      showNotification("Aucune commune trouvée à cet endroit.", type = "message")
+      return()
+    }
+    
+    libgeo <- info$LIBGEO[1]
+    libdens7 <- info$LIBDENS7[1]
+    nb_jard <- info$nb_jardins[1]
+    
+    popup_html <- sprintf(
+      "<b>%s</b><br/>
+      Jardins recensés : <b>%d</b><br/>
+      Type de densité : <b>%s</b>",
+      htmltools::htmlEscape(libgeo),
+      nb_jard,
+      htmltools::htmlEscape(libdens7)
+    )
+    
+    leafletProxy("map_intro") %>%
+      clearPopups() %>%
+      addPopups(
+        lng = click$lng,
+        lat = click$lat,
+        popup = popup_html,
+        options = popupOptions(closeButton = TRUE)
+    )
   })
   
   
