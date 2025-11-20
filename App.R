@@ -341,7 +341,7 @@ ui <- navbarPage(
                                          plotOutput("plot_occurrences", height = "350px", click = "plot_click")
                                   ),
                                   column(width = 9,
-                                         leafletOutput("map_scraping", height = "80vh"),
+                                         leafletOutput("map_scraping", height = "65vh"),
                                          uiOutput("no_result_text")
                                   )
                                 ),
@@ -2025,10 +2025,23 @@ server <- function(input, output, session) {
           sprintf("Occurrences totales de « %s » (par type de jardin)", w)
       }
       
-      d <- d %>% dplyr::arrange(dplyr::desc(.data[[metric]]))
+      # 🔁 Récupère l’ordre global (tous les jardins) comme référence
+      glob <- .make_global_agg(
+        dat,
+        mode,
+        agg_level = if (mode == "type") (input$agg_level %||% "grand") else "grand",
+        con = NULL,
+        T_COSIA = NULL
+      )
+      if (!is.null(glob$df) && nrow(glob$df) > 0) {
+        ord <- glob$df %>%
+          dplyr::arrange(dplyr::desc(.data[[glob$y]])) %>%
+          dplyr::pull(label_aff)
+        d$label_aff <- factor(d$label_aff, levels = ord)
+      }
       
       return(
-        ggplot(d, aes(x = reorder(label_aff, .data[[metric]]), y = .data[[metric]])) +
+        ggplot(d, aes(x = label_aff, y = .data[[metric]])) +
           geom_col() +
           coord_flip() +
           labs(
@@ -2044,9 +2057,27 @@ server <- function(input, output, session) {
     if (mode == "sol") {
       d <- dat$sols
       if (is.null(d) || !nrow(d)) return(NULL)
+      
+      # 🔁 Ordre global par type de sol (tous les jardins)
+      con_glob <- connect_to_jacob()
+      on.exit(try(DBI::dbDisconnect(con_glob), silent = TRUE), add = TRUE)
+      glob <- .make_global_agg(
+        dat,
+        mode = "sol",
+        agg_level = "grand",
+        con = con_glob,
+        T_COSIA = T_COSIA
+      )
+      if (!is.null(glob$df) && nrow(glob$df) > 0) {
+        ord <- glob$df %>%
+          dplyr::arrange(dplyr::desc(.data[[glob$y]])) %>%
+          dplyr::pull(label_aff)
+        d$label_aff <- factor(d$label_aff, levels = ord)
+      }
+      
       d <- d %>% dplyr::arrange(dplyr::desc(pct_share))
       return(
-        ggplot(d, aes(x = reorder(label_aff, pct_share), y = pct_share)) +
+        ggplot(d, aes(x = label_aff, y = pct_share)) +
           geom_col() +
           coord_flip() +
           scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
@@ -2058,6 +2089,7 @@ server <- function(input, output, session) {
           theme_minimal(base_size = 13)
       )
     }
+    
   })
   
   output$plot_bytype_global <- renderPlot({
@@ -2071,6 +2103,7 @@ server <- function(input, output, session) {
       con <- connect_to_jacob()
       on.exit(try(DBI::dbDisconnect(con), silent = TRUE), add = TRUE)
     }
+    
     glob <- .make_global_agg(
       dat,
       mode,
@@ -2078,49 +2111,32 @@ server <- function(input, output, session) {
       con = con,
       T_COSIA = T_COSIA
     )
-    d    <- glob$df
+    d <- glob$df
     if (is.null(d) || !nrow(d)) return(NULL)
-    
-    # Aligner l’ordre des catégories sur le graphe de gauche
-    if (mode == "type") {
-      left <- if (identical(input$agg_level, "grand")) dat$grand else dat$sous
-      metric_left <- if ((input$analysis_metric %||% "sum") == "rate") "taux_jardins" else "occ_total"
-      if (!is.null(left) && nrow(left)) {
-        ord <- left %>% dplyr::arrange(dplyr::desc(.data[[metric_left]])) %>% dplyr::pull(label_aff)
-        d$label_aff <- factor(d$label_aff, levels = ord)
-      }
-    } else if (mode == "dens") {
-      left <- dat$dens
-      metric_left <- if ((input$dens_metric %||% "sum") == "rate") "taux_jardins" else "occ_total"
-      if (!is.null(left) && nrow(left)) {
-        ord <- left %>% dplyr::arrange(dplyr::desc(.data[[metric_left]])) %>% dplyr::pull(label_aff)
-        d$label_aff <- factor(d$label_aff, levels = ord)
-      }
-    } else if (mode == "sol") {
-      left <- dat$sols
-      if (!is.null(left) && nrow(left)) {
-        ord <- left %>% dplyr::arrange(dplyr::desc(pct_share)) %>% dplyr::pull(label_aff)
-        d$label_aff <- factor(d$label_aff, levels = ord)
-      }
-    }
     
     ycol <- glob$y
     ylab <- glob$ylab
     title_suffix <- glob$title_suffix
     
+    # 🔁 C’est ici qu’on définit l’ordre de référence
+    ord <- d %>%
+      dplyr::arrange(dplyr::desc(.data[[ycol]])) %>%
+      dplyr::pull(label_aff)
+    d$label_aff <- factor(d$label_aff, levels = ord)
+    
     if (mode == "sol") {
-      ggplot(d, aes(x = reorder(label_aff, .data[[ycol]]), y = .data[[ycol]])) +
+      ggplot(d, aes(x = label_aff, y = .data[[ycol]])) +
         geom_col() +
         coord_flip() +
         scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
         labs(
           title = paste("Structure globale", title_suffix),
-          x = if (mode == "dens") "Densité de commune" else if (mode == "sol") "Type de sol (CoSIA)" else "Type de jardin",
+          x = "Type de sol (CoSIA)",
           y = ylab
         ) +
         theme_minimal(base_size = 13)
     } else {
-      ggplot(d, aes(x = reorder(label_aff, .data[[ycol]]), y = .data[[ycol]])) +
+      ggplot(d, aes(x = label_aff, y = .data[[ycol]])) +
         geom_col() +
         coord_flip() +
         labs(
@@ -2131,6 +2147,7 @@ server <- function(input, output, session) {
         theme_minimal(base_size = 13)
     }
   })
+  
   
   
   # ---- Box de régression logistique ----
