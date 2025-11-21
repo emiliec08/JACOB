@@ -73,8 +73,15 @@ sf_add_coords <- function(x) {
 }
 
 # === Lexique
-get_lemma_forms <- function(lemma, con) {
+get_lemma_forms <- function(lemma, con = NULL) {
   if (is.null(lemma) || !nzchar(lemma)) return(character(0))
+  
+  # Si aucune connexion fournie, on en ouvre une juste pour cette requête
+  if (is.null(con)) {
+    con <- connect_to_jacob()
+    on.exit(try(DBI::dbDisconnect(con), silent = TRUE), add = TRUE)
+  }
+  
   sql <- paste0("
     SELECT DISTINCT word
     FROM ", paste0('"Jacob_data"', ".", "jardin_lexique_lemma"), "
@@ -82,11 +89,15 @@ get_lemma_forms <- function(lemma, con) {
       AND word IS NOT NULL
       AND trim(word) <> ''
   ")
+  
   q <- DBI::sqlInterpolate(con, sql, lem = lemma)
   out <- tryCatch(DBI::dbGetQuery(con, q), error = function(e) data.frame())
   if (!nrow(out)) return(character(0))
+  
   tolower(trimws(out$word))
 }
+
+
 
 build_regex_from_forms <- function(forms_vec) {
   if (length(forms_vec) == 0) return(NULL)
@@ -115,32 +126,68 @@ build_regex_from_forms <- function(forms_vec) {
 }
 
 # Vient colorier les textes (pour les diffs sources)
-colorize_by_filename <- function(df_texts, lemma, con, forms = NULL) {
+# Vient colorier les textes (pour les diffs sources)
+# ⇨ maintenant gère PLUSIEURS lemmes à la fois
+colorize_by_filename <- function(df_texts, lemmas, con, forms_list = NULL) {
   if (nrow(df_texts) == 0) return(NA_character_)
+  
+  # couleurs par fichier (inchangé)
   cols <- c("#1f77b4", "#2ca02c", "#d62728", "#9467bd", "#8c564b")
   df_texts <- df_texts %>% arrange(filename %||% "")
   uniq_f <- unique(df_texts$filename %||% "")
   col_map <- setNames(cols[(seq_along(uniq_f)-1) %% length(cols) + 1], uniq_f)
-  if (!"source_url" %in% names(df_texts)) df_texts$source_url <- NA_character_
-  if (!"filename"   %in% names(df_texts)) df_texts$filename   <- NA_character_
+  
+  if (!"source_url"    %in% names(df_texts)) df_texts$source_url    <- NA_character_
+  if (!"filename"      %in% names(df_texts)) df_texts$filename      <- NA_character_
   if (!"texte_nettoye" %in% names(df_texts)) df_texts$texte_nettoye <- ""
   
-  if (is.null(forms)) forms <- get_lemma_forms(lemma, con)
+  # liste des lemmes à surligner
+  lemmas <- unique(tolower(trimws(lemmas)))
+  lemmas <- lemmas[nzchar(lemmas)]
+  if (!length(lemmas)) lemmas <- character(0)
+  
+  # formes pré-calculées pour chaque lemme (si pas déjà fourni)
+  if (is.null(forms_list)) {
+    forms_list <- lapply(lemmas, function(lem) get_lemma_forms(lem, con))
+    names(forms_list) <- lemmas
+  }
   
   parts <- purrr::pmap_chr(df_texts, function(garden_id, filename, source_url, texte_nettoye, ...) {
     col <- col_map[[filename %||% ""]]
-    t <- texte_nettoye %||% ""
+    t   <- texte_nettoye %||% ""
     if (!nzchar(t)) return("")
-    t <- .highlight_keyword(t, lemma, con = con, forms = forms)
+    
+    # 🔍 on applique le surlignage pour CHAQUE lemme recherché
+    t_high <- t
+    if (length(lemmas)) {
+      for (lem in lemmas) {
+        forms <- forms_list[[lem]]
+        t_high <- .highlight_keyword(t_high, lemma = lem, con = con, forms = forms)
+      }
+    }
+    
     filename_safe <- if (!is.null(filename) && nzchar(filename)) htmltools::htmlEscape(filename) else ""
-    badge_file <- if (nzchar(filename_safe)) sprintf("<span style='background:%s20;color:%s;padding:2px 6px;border-radius:8px;font-size:90%%;margin-right:6px;'>%s</span>", col, col, filename_safe) else ""
+    badge_file <- if (nzchar(filename_safe)) sprintf(
+      "<span style='background:%s20;color:%s;padding:2px 6px;border-radius:8px;font-size:90%%;margin-right:6px;'>%s</span>",
+      col, col, filename_safe
+    ) else ""
+    
     src <- if (!is.null(source_url)) as.character(source_url) else ""
     src_safe <- if (nzchar(src)) htmltools::htmlEscape(src) else ""
-    badge_src <- if (nzchar(src_safe)) sprintf("<span style='background:#00000010;color:#444;padding:2px 6px;border-radius:8px;font-size:90%%;margin-right:6px;'>Source : %s</span>", src_safe) else ""
-    sprintf("<div style='margin-bottom:6px; color:%s;'>%s%s%s</div>", col, badge_file, badge_src, t)
+    badge_src <- if (nzchar(src_safe)) sprintf(
+      "<span style='background:#00000010;color:#444;padding:2px 6px;border-radius:8px;font-size:90%%;margin-right:6px;'>Source : %s</span>",
+      src_safe
+    ) else ""
+    
+    sprintf(
+      "<div style='margin-bottom:6px; color:%s;'>%s%s%s</div>",
+      col, badge_file, badge_src, t_high
+    )
   })
+  
   paste(parts[parts != ""], collapse = "")
 }
+
 
 #____________________________ Schéma & tables __________________________________
 DB_SCHEMA <- '"Jacob_data"'
@@ -332,7 +379,12 @@ ui <- navbarPage(
                                   column(width = 3,
                                          div(
                                            style = "display:flex; flex-direction:column; gap:2px; max-width:300px;",
-                                           textInput("search_word", "Entrez un mot-clé (lemma) et appuyez sur Rechercher :", value = "", placeholder = "ex : rat"),
+                                           textInput(
+                                             "search_word",
+                                             "Entrez un ou plusieurs mots-clés (lemmes), séparés par des virgules :",
+                                             value = "",
+                                             placeholder = "ex : rat, souris, moustique"
+                                           ),
                                            actionButton("do_search", "Rechercher", icon = icon("search"),
                                                         style="width:120px; font-size:90%;")
                                          ),
@@ -350,26 +402,38 @@ ui <- navbarPage(
                        ),
                        
                        # ---- Sous-onglet 2 : Régions (diffusion / intensité) ----
-                       tabPanel("Régions (diffusion / intensité)",
+                       tabPanel("Régions (diffusion / stock)",
                                 sidebarLayout(
                                   sidebarPanel(
                                     textInput("kw_region", "Mot-clé", value = "moustique", placeholder = "ex. moustique"),
-                                    radioButtons("metric_region", "Métrique",
-                                                 choices = c("Diffusion (%)" = "diffusion_pct",
-                                                             "Occurrences totales" = "total_occ_kw"),
-                                                 selected = "diffusion_pct", inline = TRUE),
                                     
-                                    # >>> nouveaux contrôles de discrétisation <<<
-                                    selectInput(
-                                      "region_bins", "Discrétisation",
-                                      choices = c("Quantiles (auto)" = "quantile",
-                                                  "Jenks (naturelles)" = "jenks",
-                                                  "Égal-intervalle" = "equal",
-                                                  "Continu (sans classes)" = "continuous"),
-                                      selected = "quantile"
+                                    # ⬇️ ICI : on remplace ton ancien radioButtons("metric_region", ...)
+                                    radioButtons(
+                                      "metric_region", "Type de carte",
+                                      choices = c(
+                                        "Diffusion (%) – choroplèthe"                 = "diffusion_pct",
+                                        "Stock brut – cercles proportionnels"         = "stock_circles"
+                                      ),
+                                      selected = "diffusion_pct",
+                                      inline   = FALSE
                                     ),
-                                    numericInput("region_k", "Nombre de classes", value = 6, min = 3, max = 9, step = 1),
                                     
+                                    # tes contrôles de discrétisation restent (ils seront juste ignorés en mode cercles)
+                                    conditionalPanel(
+                                      condition = "input.metric_region != 'stock_circles'",
+                                      selectInput(
+                                        "region_bins", "Discrétisation",
+                                        choices = c("Quantiles (auto)"      = "quantile",
+                                                    "Jenks (naturelles)"    = "jenks",
+                                                    "Égal-intervalle"       = "equal",
+                                                    "Continu (sans classes)" = "continuous"),
+                                        selected = "quantile"
+                                      ),
+                                      numericInput(
+                                        "region_k", "Nombre de classes",
+                                        value = 6, min = 3, max = 9, step = 1
+                                      )
+                                    ),
                                     actionButton("run_regions", "Analyser"),
                                     hr(),
                                     div(style="margin-top:8px;", uiOutput("phrase_region"))
@@ -379,6 +443,7 @@ ui <- navbarPage(
                                   )
                                 )
                        )
+                       
                        
            )
   ),
@@ -498,8 +563,16 @@ ui <- navbarPage(
 server <- function(input, output, session) {
   
   ################################################# GESTION DU MDP DANS L'ONGLET 2 ###########################################################################
+  search_keywords <- reactiveVal(character(0))
+  
+  
+  
   # ---- Verrou d'accès aux textes
   pending_garden_id <- reactiveVal(NULL)    # mémorise l'ID cliqué en attente du mot de passe
+  # mémoriser le mot utilisé - onglet 2
+  last_kw_region <- reactiveVal(NULL)  # mot-clé fixé au clic sur "Analyser" (onglet régions)
+  r_sf_reg       <- reactiveVal(NULL)   # sf des régions pour l'onglet
+  
   
   open_text_password_modal <- function() {
     showModal(modalDialog(
@@ -521,42 +594,73 @@ server <- function(input, output, session) {
   # ---- Charge le texte d'un jardin et l'affiche dans text_zone
   load_and_show_text <- function(gid) {
     if (is.null(gid) || gid == "") return(invisible(NULL))
-    w <- trimws(input$search_word %||% "")
     
-    show_modal_spinner(
-      spin = "fading-circle",
-      text = sprintf("Chargement du texte pour le jardin %s...", gid),
-      color = "#8EBF8E"
-    )
+    # 1) Mots-clés saisis dans l'onglet (multi lemmes possibles)
+    w_raw <- trimws(input$search_word %||% "")
+    kws <- unlist(strsplit(w_raw, "[,;]"))
+    kws <- unique(tolower(trimws(kws)))
+    kws <- kws[nzchar(kws)]
     
+    # 2) Connexion à la base
     con <- connect_to_jacob()
     on.exit(try(DBI::dbDisconnect(con), silent = TRUE), add = TRUE)
     
-    sql_text <- sprintf("
-    SELECT filename, source_url, texte_nettoye
+    # 3) Récupérer les textes pour CE jardin
+    sql_txt <- sprintf("
+    SELECT 
+      garden_id,
+      filename,
+      source_url,
+      texte_nettoye
     FROM %s
-    WHERE garden_id = '%s'
-  ", T_TEXT, sql_escape(gid))
+    WHERE garden_id = %s
+    ORDER BY filename, source_url;
+  ",
+                       T_TEXT,
+                       DBI::dbQuoteLiteral(con, gid)
+    )
     
-    txt <- tryCatch(DBI::dbGetQuery(con, sql_text), error = function(e) data.frame())
-    remove_modal_spinner()
+    txt <- tryCatch(
+      DBI::dbGetQuery(con, sql_txt),
+      error = function(e) {
+        showNotification(
+          paste("Erreur SQL (textes) :", e$message),
+          type = "error"
+        )
+        data.frame()
+      }
+    )
     
     if (nrow(txt) == 0) {
-      showNotification("Aucun texte trouvé pour ce jardin.", type = "warning")
-      r_selected_text(NULL)
+      r_selected_text(
+        sprintf("Aucun texte trouvé pour le jardin %s.", gid)
+      )
       return(invisible(NULL))
     }
     
-    forms_for_w <- get_lemma_forms(w, con)
-    if ("highlight_texts" %in% names(input) && isTRUE(input$highlight_texts)) {
-      txt$texte_nettoye <- .highlight_keyword(txt$texte_nettoye, w, con = con, forms = forms_for_w)
+    # 4) Préparer les formes pour CHAQUE lemme, si des mots ont été saisis
+    forms_list <- NULL
+    if (length(kws)) {
+      forms_list <- lapply(kws, function(lem) get_lemma_forms(lem, con))
+      names(forms_list) <- kws
+    } else {
+      kws <- character(0)
     }
     
-    html_text <- colorize_by_filename(txt, lemma = w, con = con, forms = forms_for_w)
+    # 5) Coloriser/surligner par fichier + mots-clés
+    html_text <- colorize_by_filename(
+      df_texts   = txt,
+      lemmas     = kws,
+      con        = con,
+      forms_list = forms_list
+    )
+    
+    # 6) Envoyer dans la zone de texte
     r_selected_text(html_text)
     showNotification(sprintf("✅ Texte chargé pour le jardin %s", gid), type = "message")
     invisible(NULL)
   }
+  
   
   observeEvent(input$confirm_pwd, {
     req(input$pwd_input)
@@ -574,6 +678,7 @@ server <- function(input, output, session) {
   })
   
   ################################################## GESTION DU MDP DANS L'ONGLET 2 ###########################################################################
+  
   ################################################## ONGLET 1 : INTRODUCTION ###########################################################################
   
   
@@ -1128,45 +1233,122 @@ server <- function(input, output, session) {
   
   ###################################################################################### ONGLET N °2 SCRAPING : ################################################################ 
   
-  ################################################## ONGLET 1 INTRODUCTION ###########################################################################
+
+  # ============================================================
+  # RÉCUPÉRATION MULTI-MOTS POUR L’ONGLET "CERCLÉS"
+  # ============================================================
   
   r_get_jacob_word <- eventReactive(input$do_search, {
-    w <- trimws(input$search_word %||% "")
-    if (w == "") return(empty_sf_4326())
+    w_raw <- trimws(input$search_word %||% "")
+    if (w_raw == "") return(empty_sf_4326())
+    
+    # --- Séparer les mots par virgule / point-virgule ---
+    kws <- unlist(strsplit(w_raw, "[,;]"))
+    kws <- unique(tolower(trimws(kws)))
+    kws <- kws[nzchar(kws)]
+    if (!length(kws)) return(empty_sf_4326())
+    
+    # on garde les lemmes recherchés pour la légende + surlignage
+    search_keywords(kws)
     
     show_modal_spinner(
-      spin = "fading-circle",
-      text = sprintf("Recherche en cours pour « %s »...", w),
+      spin  = "fading-circle",
+      text  = sprintf("Recherche en cours pour : %s", w_raw),
       color = "#8EBF8E"
     )
     
     con <- connect_to_jacob()
     
-    # --- Agrégation SQL directe ---
-    sql_metrics <- paste0("
-      SELECT 
-        s.garden_id,
-        s.lemma,
-        SUM(s.n) AS occurrences,
-        MAX(s.spec) AS spec
-      FROM ", T_SPEC, " s
-      WHERE LOWER(TRIM(s.lemma)) = LOWER(TRIM(?word_exact))
-      GROUP BY s.garden_id, s.lemma
-    ")
+    # --- Construction de la clause IN('rat','moustique',...) SANS trucs chelous ---
+    kw_sql_vec   <- sprintf("'%s'", sql_escape(kws))
+    kw_in_clause <- paste(kw_sql_vec, collapse = ", ")
     
-    q1 <- DBI::sqlInterpolate(con, sql_metrics, word_exact = w)
-    agg_data <- tryCatch(DBI::dbGetQuery(con, q1), error = function(e) NULL)
+    # -------------------------------------------------------------------
+    # 1) RÉCUPÉRER OCCURRENCES PAR (jardin, lemme)
+    # -------------------------------------------------------------------
+    sql_metrics <- sprintf("
+  SELECT 
+    s.garden_id::text             AS garden_id,
+    lower(trim(s.lemma))          AS lemma,
+    SUM(s.n)::bigint              AS occurrences,
+    MAX(s.spec)::double precision AS spec
+  FROM %s s
+  WHERE lower(trim(s.lemma)) IN (%s)
+    AND s.n > 0                         -- 🔴 NE GARDER QUE LES LIGNES AVEC AU MOINS 1 OCCURRENCE
+  GROUP BY s.garden_id, lower(trim(s.lemma))
+", T_SPEC, kw_in_clause)
+    
+    agg_data <- tryCatch(DBI::dbGetQuery(con, sql_metrics), error = function(e) NULL)
     
     if (is.null(agg_data) || nrow(agg_data) == 0) {
       remove_modal_spinner()
+      try(DBI::dbDisconnect(con), silent = TRUE)
       return(empty_sf_4326())
     }
     
-    # --- Géométries + infos ---
-    gids_sql <- paste(sprintf("'%s'", sql_escape(as.character(agg_data$garden_id))), collapse = ",")
+    
+    # -------------------------------------------------------------------
+    # 2) AGRÉGER PAR JARDIN
+    # -------------------------------------------------------------------
+    # 🔒 Sécurité : on enlève les lemmes qui ont 0 occurrence dans ce jardin
+    agg_data <- agg_data %>%
+      dplyr::filter(!is.na(occurrences) & occurrences > 0)
+    
+    agg_garden <- agg_data %>%
+      dplyr::group_by(garden_id) %>%
+      dplyr::arrange(dplyr::desc(occurrences), .by_group = TRUE) %>%
+      dplyr::summarise(
+        occurrences   = sum(as.numeric(occurrences), na.rm = TRUE),   # Stock total (tous mots)
+        spec          = suppressWarnings(max(as.numeric(spec), na.rm = TRUE)),
+        n_terms       = dplyr::n_distinct(lemma),                     # nb de mots-clés trouvés
+        primary_lemma = lemma[1],                                     # le mot dominant
+        lemma_list    = paste(sort(unique(lemma)), collapse = ", "),
+        .groups = "drop"
+      ) %>%
+      dplyr::mutate(
+        spec = ifelse(is.infinite(spec), NA_real_, spec)
+      ) %>%
+      # sécurité : on garde seulement les jardins où il y a vraiment au moins 1 occurrence
+      dplyr::filter(occurrences > 0)
+    
+    if (nrow(agg_garden) == 0) {
+      remove_modal_spinner()
+      try(DBI::dbDisconnect(con), silent = TRUE)
+      return(empty_sf_4326())
+    }
+    
+    # -------------------------------------------------------------------
+    # 3) PALETTE : UNE COULEUR PAR MOT + ROUGE SI MULTI-MOTS
+    # -------------------------------------------------------------------
+    base_cols <- c(
+      "#1f77b4", "#ff7f0e", "#2ca02c", "#9467bd",
+      "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"
+    )
+    cols_rep <- rep(base_cols, length.out = length(kws))
+    col_map  <- setNames(cols_rep, kws)   # lemme -> couleur
+    
+    agg_garden <- agg_garden %>%
+      dplyr::mutate(
+        primary_color = unname(col_map[primary_lemma]),
+        primary_color = ifelse(is.na(primary_color), "#888888", primary_color),
+        highlight     = dplyr::if_else(
+          n_terms >= 2,
+          "#e41a1c",         # 🔴 plusieurs mots-clés dans ce jardin
+          primary_color      # 🎨 sinon couleur du mot dominant
+        )
+      )
+    
+    # -------------------------------------------------------------------
+    # 4) RÉCUPÉRER LES COORDONNÉES
+    # -------------------------------------------------------------------
+    gids_sql <- paste(
+      sprintf("'%s'", sql_escape(as.character(agg_garden$garden_id))),
+      collapse = ","
+    )
+    
     sql_geom <- sprintf("
       SELECT 
-        p.id,
+        p.id::text AS id,
         ST_X(p.geom) AS lng,
         ST_Y(p.geom) AS lat,
         i.name,
@@ -1180,21 +1362,33 @@ server <- function(input, output, session) {
     ", T_PNT, T_INFOS, gids_sql)
     
     geom_data <- tryCatch(DBI::dbGetQuery(con, sql_geom), error = function(e) NULL)
-    out <- dplyr::left_join(geom_data, agg_data, by = c("id" = "garden_id")) %>%
-      mutate(
-        occurrences = as.integer(occurrences),
-        spec = as.numeric(spec),
-        highlight = case_when(
-          !is.na(spec) & spec >  0.1 ~ "steelblue",
-          !is.na(spec) & spec < -1.5 ~ "coral",
-          TRUE ~ "lightgrey"
-        ),
+    
+    try(DBI::dbDisconnect(con), silent = TRUE)
+    
+    if (is.null(geom_data) || nrow(geom_data) == 0) {
+      remove_modal_spinner()
+      return(empty_sf_4326())
+    }
+    
+    # -------------------------------------------------------------------
+    # 5) ASSEMBLER LE SF FINAL
+    # -------------------------------------------------------------------
+    out <- dplyr::left_join(
+      geom_data,
+      agg_garden,
+      by = c("id" = "garden_id")
+    ) %>%
+      dplyr::mutate(
         texte = NA_character_
       )
     
     remove_modal_spinner()
+    
     sf::st_as_sf(out, coords = c("lng", "lat"), crs = 4326)
   }, ignoreInit = TRUE)
+  
+  
+  
   
   
   #  Quand on lance une nouvelle recherche, on vide le texte sélectionné dans text_zone
@@ -1230,7 +1424,7 @@ server <- function(input, output, session) {
   
   observe({
     filtered_data <- r_get_jacob_word()
-    proxy_map <- leafletProxy("map_scraping") %>% clearShapes() %>% clearMarkers()
+    proxy_map <- leafletProxy("map_scraping") %>% clearShapes() %>% clearMarkers() %>% clearControls()
     
     if (is.null(filtered_data) || nrow(filtered_data) == 0) {
       output$no_result_text <- renderUI({
@@ -1253,45 +1447,71 @@ server <- function(input, output, session) {
     bb <- sf::st_bbox(filtered_data)
     proxy_map %>% fitBounds(lng1 = bb$xmin, lat1 = bb$ymin, lng2 = bb$xmax, lat2 = bb$ymax)
     
+    # 🔵🟣🟢 Cercles colorés + rouge si plusieurs lemmes
     proxy_map %>% addCircleMarkers(
       data = filtered_data,
       lng = ~lng, lat = ~lat,
       radius = ~(log1p(occurrences) * 4),
       stroke = TRUE, color = ~highlight, weight = 1, opacity = 0.9,
       fillColor = ~highlight, fillOpacity = 0.5,
-      popup = ~paste0("<strong>", id, "</strong>",
-                      "<br>Occurrences : ", occurrences,
-                      "<br>Spécificité : ", round(spec,2),
-                      "<br>Nom : ", name,
-                      "<br>Type : ", classe_mot)
-    )
-  })
-  
-  
-  # ---- Graphique top 20 ----
-  output$plot_occurrences <- renderPlot({
-    req(input$do_search)
-    word_used <- isolate(input$search_word)
-    data <- r_get_jacob_word()
-    if (is.null(data) || nrow(data) == 0) return(NULL)
-    data <- ensure_cols(data)
-    top20 <- data %>% arrange(desc(occurrences)) %>% slice_head(n = 20)
-    
-    # 🔤 Titre wrap (ajuste la largeur si besoin : 42–55)
-    title_txt <- stringr::str_wrap(
-      paste0("Les 20 jardins où le mot « ", word_used, " » apparaît le plus souvent"),
-      width = 48
-    )
-    
-    ggplot(top20, aes(x = reorder(id, occurrences), y = occurrences)) +
-      geom_col(fill = "lightblue") +
-      coord_flip(clip = "off") +  # ← évite le rognage
-      labs(title = title_txt, x = "ID du jardin", y = "Nombre d'occurrences") +
-      theme_minimal(base_size = 13) +
-      theme(
-        plot.title = element_text(hjust = 0, lineheight = 1.1, margin = margin(b = 8)),
-        plot.margin = margin(t = 14, r = 18, b = 8, l = 8)
+      popup = ~paste0(
+        "<strong>", id, "</strong>",
+        "<br>Occurrences (total) : ", occurrences,
+        "<br>Spécificité max : ", round(spec,2),
+        "<br>Mots trouvés : ", lemma_list,
+        "<br>Nom : ", name,
+        "<br>Type : ", classe_mot
       )
+    )
+    
+    # 🧾 LÉGENDE : 1 couleur par lemme + rouge = plusieurs lemmes
+    kws <- search_keywords()
+    kws <- kws[nzchar(kws)]
+    if (length(kws)) {
+      base_cols <- c(
+        "#1f77b4", "#ff7f0e", "#2ca02c", "#9467bd",
+        "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"
+      )
+      cols_rep <- rep(base_cols, length.out = length(kws))
+      col_map  <- setNames(cols_rep, kws)
+      
+      items <- paste0(
+        mapply(function(lem, col) {
+          sprintf(
+            "<div style='margin-bottom:2px;'>
+               <span style='display:inline-block;width:12px;height:12px;border-radius:50%%;
+                            background:%s;margin-right:4px;'></span>%s
+             </div>",
+            col,
+            htmltools::htmlEscape(lem)
+          )
+        }, kws, unname(col_map)),
+        collapse = ""
+      )
+      
+      multi_item <- "
+        <div style='margin-top:4px;'>
+          <span style='display:inline-block;width:12px;height:12px;border-radius:50%%;background:#e41a1c;margin-right:4px;'></span>
+          Plusieurs termes dans le même jardin
+        </div>
+      "
+      
+      legend_html <- paste0(
+        "<div style='background:white;padding:6px 8px;border-radius:6px;font-size:12px;box-shadow:0 1px 4px rgba(0,0,0,0.3);'>
+           <b>Lemmes recherchés</b><br/>",
+        items,
+        "<hr style='margin:4px 0;'>",
+        multi_item,
+        "</div>"
+      )
+      
+      proxy_map %>%
+        addControl(
+          html = legend_html,
+          position = "bottomright"
+        )
+    }
+    
   })
   
   
@@ -1415,19 +1635,275 @@ server <- function(input, output, session) {
   
                                                               #################### SOUS ONGLET DE L'ONGLET N°2 ####################
   
-  # ---------- Carte choroplèthe par région (sans ST_Intersects) ----------
+  .render_regions_view <- function(sf_reg, met) {
+    # Sécurité
+    if (is.null(sf_reg) || nrow(sf_reg) == 0) {
+      output$map_region <- leaflet::renderLeaflet({
+        leaflet::leaflet() |>
+          leaflet::addProviderTiles(leaflet::providers$CartoDB.Positron)
+      })
+      output$phrase_region <- renderUI(
+        htmltools::HTML("ℹ️ Aucune région avec une valeur calculable pour ce mot.")
+      )
+      return(invisible(NULL))
+    }
+    
+    # On garde le mot figé
+    kw_disp <- last_kw_region() %||% ""
+    
+    # Libellés harmonisés
+    metric_label_short <- if (met == "stock_circles") {
+      "le stock brut du mot (nombre total d’occurrences)"
+    } else {
+      "la diffusion du mot"
+    }
+    
+    metric_label_detail <- if (met == "stock_circles") {
+      "nombre total d’occurrences du mot dans l’ensemble des jardins de la région"
+    } else {
+      "part des jardins de la région où le mot apparaît au moins une fois"
+    }
+    
+    # ============================
+    # MODE : STOCK BRUT (CERCLÉS)
+    # ============================
+    if (met == "stock_circles") {
+      vals_stock <- sf_reg$total_occ_kw
+      vals_pos   <- vals_stock[vals_stock > 0 & is.finite(vals_stock)]
+      
+      if (!length(vals_pos)) {
+        output$map_region <- leaflet::renderLeaflet({
+          leaflet::leaflet() |>
+            leaflet::addProviderTiles(leaflet::providers$CartoDB.Positron)
+        })
+        output$phrase_region <- renderUI(
+          htmltools::HTML("ℹ️ Aucune occurrence trouvée pour ce mot.")
+        )
+        return(invisible(NULL))
+      }
+      
+      max_val <- max(vals_pos, na.rm = TRUE)
+      
+      # Fonction de mise à l'échelle des rayons (pixels)
+      scale_r <- function(v) {
+        ifelse(v <= 0, 0, 6 + 24 * sqrt(v / max_val))  # rayon ~ 6 à 30 px
+      }
+      
+      # Centroïdes par région
+      sf_cent <- sf::st_point_on_surface(sf_reg) |>
+        sf::st_transform(4326)
+      coords <- sf::st_coordinates(sf_cent)
+      sf_cent$lon    <- coords[, 1]
+      sf_cent$lat    <- coords[, 2]
+      sf_cent$radius <- scale_r(sf_cent$total_occ_kw)
+      
+      # Valeurs de référence pour la légende
+      ref_vals <- pretty(range(vals_pos), n = 3)
+      ref_vals <- unique(ref_vals[ref_vals > 0])
+      if (length(ref_vals) > 3) ref_vals <- ref_vals[1:3]
+      ref_rads <- scale_r(ref_vals)
+      
+      legend_html <- paste0(
+        "<div style='background:white;padding:6px 8px;border-radius:6px;font-size:12px;'>",
+        "<b>Stock brut (occurrences)</b><br/>",
+        paste(
+          mapply(function(val, r) {
+            sprintf(
+              "<div style='display:flex;align-items:center;margin-top:4px;'>
+               <div style='width:%dpx;height:%dpx;
+                           border-radius:50%%;
+                           border:2px solid #d73027;
+                           background:rgba(252,141,89,0.3);
+                           margin-right:6px;'></div>
+               <span>~ %s</span>
+             </div>",
+              round(2 * r), round(2 * r),
+              formatC(val, big.mark = " ", format = "d")
+            )
+          }, ref_vals, ref_rads),
+          collapse = ""
+        ),
+        "</div>"
+      )
+      
+      # Carte : polygones neutres + cercles
+      output$map_region <- leaflet::renderLeaflet({
+        leaflet::leaflet(sf_reg) |>
+          leaflet::addProviderTiles(leaflet::providers$CartoDB.Positron) |>
+          leaflet::addPolygons(
+            weight      = 0.8,
+            color       = "#777777",
+            fillOpacity = 0,
+            fillColor   = "#FFFFFF"
+          ) |>
+          leaflet::addCircleMarkers(
+            data       = sf_cent,
+            lng        = ~lon, lat = ~lat,
+            radius     = ~radius,
+            stroke     = TRUE,
+            color      = "#d73027",
+            weight     = 1,
+            opacity    = 0.9,
+            fillColor  = "#fc8d59",
+            fillOpacity= 0.5,
+            label      = ~lapply(paste0(
+              "<b>", htmltools::htmlEscape(nom_reg), "</b><br/>",
+              "Occurrences totales : <b>",
+              formatC(total_occ_kw, big.mark = " ", format = "d"), "</b><br/>",
+              "Jardins : ", formatC(n_gardens, big.mark = " ", format = "d"),
+              " &nbsp;|&nbsp; Avec mot : ",
+              formatC(n_gardens_with_kw, big.mark = " ", format = "d")
+            ), htmltools::HTML)
+          ) |>
+          leaflet::addControl(
+            html     = legend_html,
+            position = "bottomright"
+          ) |>
+          leaflet::setView(lng = 2.5, lat = 46.5, zoom = 5)
+      })
+      
+      # Phrase de synthèse (stock brut)
+      try({
+        idx <- which.max(vals_stock)
+        if (length(idx) == 1 && is.finite(vals_stock[idx]) && vals_stock[idx] > 0) {
+          best <- sf_reg[idx, ]
+          txt <- paste0(
+            "➡️ Pour le mot « <b>", htmltools::htmlEscape(kw_disp),
+            "</b> », ", metric_label_short,
+            " est le plus élevé dans la région <b>",
+            htmltools::htmlEscape(best$nom_reg), "</b>."
+          )
+          txt <- paste0(
+            txt, "<br/><span style='color:#555;font-size:90%;'>(",
+            htmltools::htmlEscape(metric_label_detail), ")</span>"
+          )
+          output$phrase_region <- renderUI(htmltools::HTML(txt))
+        } else {
+          output$phrase_region <- renderUI(
+            htmltools::HTML("ℹ️ Impossible de déterminer une région dominante pour le stock brut.")
+          )
+        }
+      }, silent = TRUE)
+      
+      return(invisible(NULL))
+    }
+    
+    # ============================
+    # MODE : DIFFUSION (%) – CHOROPLÈTHE
+    # ============================
+    
+    # métrique cartographiée
+    sf_reg$metric_value <- sf_reg$diffusion_pct
+    
+    vals    <- sf_reg$metric_value
+    vals_ok <- vals[is.finite(vals) & !is.na(vals)]
+    
+    make_breaks <- function(x, method = "quantile", k = 6) {
+      x <- x[is.finite(x)]
+      if (!length(x)) return(c(0, 1))
+      if (length(unique(x)) < 3) return(unique(sort(c(0, x, max(x, na.rm = TRUE)))))
+      if (method == "quantile") {
+        brks <- classInt::classIntervals(x, n = k, style = "quantile")$brks
+      } else if (method == "jenks") {
+        brks <- classInt::classIntervals(x, n = k, style = "jenks")$brks
+      } else if (method == "equal") {
+        brks <- classInt::classIntervals(x, n = k, style = "equal")$brks
+      } else {
+        brks <- pretty(range(x, na.rm = TRUE), n = k)
+      }
+      brks <- unique(brks)
+      if (length(brks) < 2) brks <- c(min(x, na.rm = TRUE), max(x, na.rm = TRUE))
+      brks
+    }
+    
+    bin_method <- input$region_bins %||% "quantile"
+    k          <- if (!is.null(input$region_k)) input$region_k else 6
+    
+    # Palette & légende
+    if (bin_method == "continuous") {
+      pal <- leaflet::colorNumeric("YlOrRd", domain = vals_ok, na.color = "#e0e0e0")
+      color_fun <- function(v) pal(v)
+      add_leg <- function(map) leaflet::addLegend(
+        map, pal = pal, values = vals, title = "Diffusion (%)",
+        opacity = 0.9, labFormat = leaflet::labelFormat(suffix = " %", digits = 1)
+      )
+    } else {
+      brks <- make_breaks(vals_ok, method = bin_method, k = k)
+      pal  <- leaflet::colorBin("YlOrRd", domain = vals, bins = brks,
+                                na.color = "#e0e0e0", right = FALSE)
+      color_fun <- function(v) pal(v)
+      add_leg <- function(map) leaflet::addLegend(
+        map, pal = pal, values = vals, title = "Diffusion (%)", opacity = 0.9
+      )
+    }
+    
+    # Carte choroplèthe
+    output$map_region <- leaflet::renderLeaflet({
+      leaflet::leaflet(sf_reg) |>
+        leaflet::addProviderTiles(leaflet::providers$CartoDB.Positron) |>
+        leaflet::addPolygons(
+          weight      = 0.9,
+          color       = "#666666",
+          fillOpacity = 0.82,
+          fillColor   = ~color_fun(metric_value),
+          label       = ~lapply({
+            fmt <- function(x) paste0(formatC(x, digits = 1, format = "f"), " %")
+            lab_val <- paste0("Diffusion : <b>", fmt(metric_value), "</b><br/>")
+            paste0(
+              "<b>", htmltools::htmlEscape(nom_reg), "</b><br/>",
+              lab_val,
+              "Jardins : ", formatC(n_gardens, big.mark = " "),
+              " &nbsp;|&nbsp; Avec mot : ",
+              formatC(n_gardens_with_kw, big.mark = " "), "<br/>",
+              "Occurrences totales : ",
+              formatC(total_occ_kw, big.mark = " ")
+            )
+          }, htmltools::HTML),
+          highlightOptions = leaflet::highlightOptions(weight = 2, bringToFront = TRUE)
+        ) |>
+        add_leg() |>
+        leaflet::setView(lng = 2.5, lat = 46.5, zoom = 5)
+    })
+    
+    # Phrase synthèse diffusion
+    try({
+      ord <- order(sf_reg$metric_value, decreasing = TRUE, na.last = NA)
+      if (length(ord) >= 1) {
+        best <- sf_reg[ord[1], ]
+        txt <- paste0(
+          "➡️ Pour le mot « <b>",
+          htmltools::htmlEscape(kw_disp),
+          "</b> », ", metric_label_short,
+          " est la plus forte dans la région <b>",
+          htmltools::htmlEscape(best$nom_reg),
+          "</b>."
+        )
+        txt <- paste0(
+          txt, "<br/><span style='color:#555;font-size:90%;'>(",
+          htmltools::htmlEscape(metric_label_detail), ")</span>"
+        )
+        output$phrase_region <- renderUI(htmltools::HTML(txt))
+      } else {
+        output$phrase_region <- renderUI(
+          htmltools::HTML("ℹ️ Aucune région avec une valeur calculable pour ce mot.")
+        )
+      }
+    }, silent = TRUE)
+  }
+  
+  # ---------- Carte par région : requête SQL au clic sur "Analyser" ----------
   observeEvent(input$run_regions, {
     req(input$kw_region, input$metric_region)
     
     kw_norm <- tolower(trimws(input$kw_region))
+    last_kw_region(kw_norm)  # on fige le mot affiché dans les phrases
     kw_sql  <- gsub("'", "''", kw_norm)   # échappe les apostrophes pour SQL
-    met     <- input$metric_region        # "diffusion_pct" | "total_occ_kw"
+    met     <- input$metric_region       # "diffusion_pct" | "stock_circles"
     
     con <- connect_to_jacob()
     on.exit(try(DBI::dbDisconnect(con), silent = TRUE), add = TRUE)
     
-    # On utilise jardin_infos.INSEE_REG pour rattacher chaque jardin à une région,
-    # et la table regions (2154) qui contient geom + NOM + INSEE_REG + jardin_r (pré-calcul du nb de jardins).
+    # Requête régions
     sql_regions <- sprintf("
     WITH occ AS (
       SELECT s.garden_id::text AS garden_id,
@@ -1456,141 +1932,38 @@ server <- function(input, output, session) {
       r.\"INSEE_REG\"                                   AS insee_reg,
       r.\"NOM\"                                         AS nom_reg,
       ST_Transform(r.geom, 4326)                        AS geom,
-      COALESCE(r.jardin_r, a.n_gardens_calc, 0)::int    AS n_gardens,     -- priorité au pré-calcul
+      COALESCE(r.jardin_r, a.n_gardens_calc, 0)::int    AS n_gardens,
       COALESCE(a.n_gardens_with_kw, 0)::int             AS n_gardens_with_kw,
       COALESCE(a.total_occ_kw, 0)::int                  AS total_occ_kw,
       CASE
         WHEN COALESCE(r.jardin_r, a.n_gardens_calc, 0) > 0
-        THEN ROUND(100.0 * COALESCE(a.n_gardens_with_kw,0) / NULLIF(COALESCE(r.jardin_r, a.n_gardens_calc, 0),0)::numeric, 1)
+        THEN ROUND(100.0 * COALESCE(a.n_gardens_with_kw,0)
+                   / NULLIF(COALESCE(r.jardin_r, a.n_gardens_calc, 0),0)::numeric, 1)
         ELSE NULL
       END                                               AS diffusion_pct
     FROM %s r
     LEFT JOIN agg a ON a.insee_reg = r.\"INSEE_REG\";
   ", T_SPEC, kw_sql, T_INFOS, T_REG)
     
-    # Lire directement en sf (car on sélectionne un champ geom)
+    # Lecture sf
     sf_reg <- sf::st_read(con, query = sql_regions, quiet = TRUE)
     validate(need(nrow(sf_reg) > 0, "Aucune région trouvée."))
     
+    # On stocke le résultat pour le réutiliser quand on change de mode
+    r_sf_reg(sf_reg)
     
-    # ---- métrique ----
-    sf_reg$metric_value <- if (met == "diffusion_pct") sf_reg$diffusion_pct else sf_reg$total_occ_kw
-    vals    <- sf_reg$metric_value
-    vals_ok <- vals[is.finite(vals) & !is.na(vals)]
-    
-    # ---- fonctions d'aide pour les classes ----
-    make_breaks <- function(x, method = "quantile", k = 6) {
-      x <- x[is.finite(x)]
-      if (!length(x)) return(c(0, 1))
-      if (length(unique(x)) < 3) return(unique(sort(c(0, x, max(x, na.rm = TRUE)))))
-      if (method == "quantile") {
-        brks <- classInt::classIntervals(x, n = k, style = "quantile")$brks
-      } else if (method == "jenks") {
-        brks <- classInt::classIntervals(x, n = k, style = "jenks")$brks
-      } else if (method == "equal") {
-        brks <- classInt::classIntervals(x, n = k, style = "equal")$brks
-      } else {
-        brks <- pretty(range(x, na.rm = TRUE), n = k)
-      }
-      brks <- unique(brks)
-      if (length(brks) < 2) brks <- c(min(x, na.rm = TRUE), max(x, na.rm = TRUE))
-      brks
-    }
-    
-    # ---- palette + légende dynamiques ----
-    bin_method <- input$region_bins %||% "quantile"
-    k          <- if (!is.null(input$region_k)) input$region_k else 6
-    
-    if (met == "diffusion_pct") {
-      # Diffusion : par défaut quantiles
-      if (bin_method == "continuous") {
-        pal <- leaflet::colorNumeric("YlOrRd", domain = vals_ok, na.color = "#e0e0e0")
-        color_fun <- function(v) pal(v)
-        add_leg <- function(map) leaflet::addLegend(
-          map, pal = pal, values = vals, title = "Diffusion (%)",
-          opacity = 0.9, labFormat = leaflet::labelFormat(suffix = " %", digits = 1)
-        )
-      } else {
-        brks <- make_breaks(vals_ok, method = bin_method, k = k)
-        pal  <- leaflet::colorBin("YlOrRd", domain = vals, bins = brks, na.color = "#e0e0e0", right = FALSE)
-        color_fun <- function(v) pal(v)
-        add_leg <- function(map) leaflet::addLegend(map, pal = pal, values = vals, title = "Diffusion (%)", opacity = 0.9)
-      }
-    } else {
-      # Occurrences : auto-log si distribution très déséquilibrée
-      med_pos <- suppressWarnings(stats::median(vals_ok[vals_ok > 0], na.rm = TRUE))
-      skew    <- (max(vals_ok, na.rm = TRUE) + 1) / (ifelse(is.finite(med_pos) && med_pos > 0, med_pos, 1) + 1)
-      use_log <- is.finite(skew) && skew > 100
-      
-      if (bin_method == "continuous") {
-        if (use_log) {
-          pal <- leaflet::colorNumeric("YlOrRd", domain = log1p(vals_ok), na.color = "#e0e0e0")
-          color_fun <- function(v) pal(log1p(v))
-          add_leg <- function(map) leaflet::addLegend(
-            map, pal = pal, values = log1p(vals),
-            title = "Occurrences (échelle log)", opacity = 0.9
-          )
-        } else {
-          pal <- leaflet::colorNumeric("YlOrRd", domain = vals_ok, na.color = "#e0e0e0")
-          color_fun <- function(v) pal(v)
-          add_leg <- function(map) leaflet::addLegend(map, pal = pal, values = vals, title = "Occurrences totales", opacity = 0.9)
-        }
-      } else {
-        x <- if (use_log) log1p(vals_ok) else vals_ok
-        brks <- make_breaks(x, method = bin_method, k = k)
-        pal  <- leaflet::colorBin("YlOrRd", domain = if (use_log) log1p(vals) else vals,
-                                  bins = brks, na.color = "#e0e0e0", right = FALSE)
-        color_fun <- function(v) if (use_log) pal(log1p(v)) else pal(v)
-        leg_title <- if (use_log) "Occurrences (échelle log)" else "Occurrences totales"
-        add_leg <- function(map) leaflet::addLegend(
-          map, pal = pal, values = if (use_log) log1p(vals) else vals, title = leg_title, opacity = 0.9
-        )
-      }
-    }
-    
-    # ---- rendu leaflet ----
-    output$map_region <- leaflet::renderLeaflet({
-      leaflet::leaflet(sf_reg) |>
-        leaflet::addProviderTiles(leaflet::providers$CartoDB.Positron) |>
-        leaflet::addPolygons(
-          weight = 0.9, color = "#666",
-          fillOpacity = 0.82,
-          fillColor = ~color_fun(metric_value),
-          label = ~lapply({
-            fmt <- if (met == "diffusion_pct")
-              function(x) paste0(formatC(x, digits = 1, format = "f"), " %")
-            else
-              function(x) formatC(x, big.mark = " ", format = "d")
-            paste0(
-              "<b>", htmltools::htmlEscape(nom_reg), "</b><br/>",
-              if (met == "diffusion_pct") "Diffusion : <b>" else "Occurrences : <b>",
-              fmt(metric_value), "</b><br/>",
-              "Jardins : ", formatC(n_gardens, big.mark = " "),
-              " &nbsp;|&nbsp; Avec mot : ", formatC(n_gardens_with_kw, big.mark = " ")
-            )
-          }, htmltools::HTML),
-          highlightOptions = leaflet::highlightOptions(weight = 2, bringToFront = TRUE)
-        ) |>
-        add_leg() |>
-        leaflet::setView(lng = 2.5, lat = 46.5, zoom = 5)
-    })
-    
-    # ---- phrase synthèse ----
-    try({
-      ord <- order(sf_reg$metric_value, decreasing = TRUE, na.last = NA)
-      if (length(ord) >= 1) {
-        best <- sf_reg[ord[1], ]
-        txt_met <- if (met == "diffusion_pct") "la diffusion" else "les occurrences"
-        output$phrase_region <- renderUI(htmltools::HTML(
-          paste0("➡️ Le mot « <b>", htmltools::htmlEscape(input$kw_region),
-                 "</b> » est davantage présent dans la région <b>",
-                 htmltools::htmlEscape(best$nom_reg), "</b> (selon ", txt_met, ").")
-        ))
-      } else {
-        output$phrase_region <- renderUI(htmltools::HTML("ℹ️ Aucune région avec une valeur calculable pour ce mot."))
-      }
-    }, silent = TRUE)
+    # On dessine tout de suite avec le mode actuellement sélectionné
+    .render_regions_view(sf_reg, met)
   })
+  
+  # ---------- Changement de mode (radio bouton) : on ne relance pas la requête ----------
+  observeEvent(input$metric_region, {
+    sf_reg <- r_sf_reg()
+    if (is.null(sf_reg) || nrow(sf_reg) == 0) return()
+    
+    met <- input$metric_region
+    .render_regions_view(sf_reg, met)
+  }, ignoreInit = TRUE)
   
   
   #   ###################################################################################### ONGLET 3 : Analyse croisée ################################################################ 
@@ -1762,7 +2135,8 @@ server <- function(input, output, session) {
       sous   = agg_sous,
       dens   = agg_dens,
       sols   = agg_sol,
-      points = df
+      points = df,
+      keyword = w 
     )
   }, ignoreInit = TRUE)
   
@@ -1939,7 +2313,7 @@ server <- function(input, output, session) {
   output$plot_bytype_main <- renderPlot({
     dat  <- r_bytype(); if (is.null(dat)) return(NULL)
     mode <- input$analysis_mode %||% "type"   # "type" | "dens" | "corr" | "sol"
-    w    <- trimws(input$word_bytype %||% "mot")
+    w <- dat$keyword %||% "mot"
     
     ## === 1) régression logistique : X = occ, Y = surface/pauvreté/niveau de vie ===
     if (mode == "corr") {
@@ -1956,7 +2330,7 @@ server <- function(input, output, session) {
                       "pauvrete"  = "Taux de pauvreté (%)",
                       "niveauvie" = "Niveau de vie médian (€)",
                       "Surface du jardin (m²)")
-      w <- trimws(input$word_bytype %||% "mot")
+      w <- dat$keyword %||% "mot"
       
       # Préparer données (binariser Y, éventuel trimming X)
       pts <- .make_logistic_data(pts, x_col, trim99 = isTRUE(input$corr_trim))
@@ -2168,7 +2542,7 @@ server <- function(input, output, session) {
                       "pauvrete"  = "le taux de pauvreté",
                       "niveauvie" = "le niveau de vie médian",
                       "la variable sélectionnée")
-    mot <- htmltools::htmlEscape(trimws(input$word_bytype %||% ""))
+    mot <- htmltools::htmlEscape(dat$keyword %||% "")
     
     # données prêtes pour la logistique
     pts <- .make_logistic_data(pts, x_col, trim99 = isTRUE(input$corr_trim))
@@ -2309,9 +2683,12 @@ server <- function(input, output, session) {
   
   output$dl_bytype_csv <- downloadHandler(
     filename = function() {
+      dat <- r_bytype()
+      kw  <- if (is.null(dat)) "mot" else (dat$keyword %||% "mot")
+      
       base <- paste0(
         "jacob_bytype_",
-        gsub("\\s+", "_", tolower(trimws(input$word_bytype %||% "mot")))
+        gsub("\\s+", "_", tolower(kw))
       )
       mode <- input$analysis_mode %||% "type"
       if (mode == "corr") {
