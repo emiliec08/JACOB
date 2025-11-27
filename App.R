@@ -17,7 +17,7 @@ library(scales)
 library(plotly)
 library(classInt)
 library(tidyr)
-library(shinycssloaders) # pour le spinner de chargmt
+library(shinycssloaders) # pour le spinner de chargmt (onglet 2)
 library(shinybusy)
 #____________________________ sources __________________________________________
 source("R/format_table.R")
@@ -25,14 +25,15 @@ source("R/connect_to_jacob.R")   # connexion Postgres
 
 #____________________ gestion du mot de passe __________________________________
 
-# --- Mot de passe pour afficher le texte (depuis .Renviron)
+# --- Mot de passe pour afficher le texte (depuis .Renviron| à faire dans l'ordi ?)
 TEXT_PWD <- Sys.getenv("SCRAPING_TEXT_PASSWORD", unset = "")
 
-#_______________________________ wms ___________________________________________ 
+#_______________________________ wms (GEOSERVER) ___________________________________________ 
 WMS_BASE   <- "https://geoserver.ens-lyon.fr/geoserver/jacob/wms"
-WMS_LAYER  <- "jacob:jardin_pnt_infos"   # ← mets ici le nom exact publié
-WMS_STYLE  <- ""                          # ou "jacob:mon_style"
+WMS_LAYER  <- "jacob:jardin_pnt_infos"   # attention ici voir geoserver
+WMS_STYLE  <- ""                          # ou "jacob:mon_style" ? "" --> style par defaut dans geoserve (j'ai fais un style déjà) donc on peut laisser vide
 WMS_LAYER_COMMUNES <-"jacob:commune_infos_poly_jardins"
+
 #____________________________ Helpers __________________________________________ 
 
 `%||%` <- function(a, b) if (is.null(a)) b else a
@@ -72,7 +73,7 @@ sf_add_coords <- function(x) {
   k
 }
 
-# === Lexique
+# Lexique
 get_lemma_forms <- function(lemma, con = NULL) {
   if (is.null(lemma) || !nzchar(lemma)) return(character(0))
   
@@ -126,12 +127,11 @@ build_regex_from_forms <- function(forms_vec) {
 }
 
 # Vient colorier les textes (pour les diffs sources)
-# Vient colorier les textes (pour les diffs sources)
 # ⇨ maintenant gère PLUSIEURS lemmes à la fois
 colorize_by_filename <- function(df_texts, lemmas, con, forms_list = NULL) {
   if (nrow(df_texts) == 0) return(NA_character_)
   
-  # couleurs par fichier (inchangé)
+  # couleurs par fichier
   cols <- c("#1f77b4", "#2ca02c", "#d62728", "#9467bd", "#8c564b")
   df_texts <- df_texts %>% arrange(filename %||% "")
   uniq_f <- unique(df_texts$filename %||% "")
@@ -157,7 +157,7 @@ colorize_by_filename <- function(df_texts, lemmas, con, forms_list = NULL) {
     t   <- texte_nettoye %||% ""
     if (!nzchar(t)) return("")
     
-    # 🔍 on applique le surlignage pour CHAQUE lemme recherché
+    # on applique le surlignage pour CHAQUE lemme recherché
     t_high <- t
     if (length(lemmas)) {
       for (lem in lemmas) {
@@ -189,7 +189,7 @@ colorize_by_filename <- function(df_texts, lemmas, con, forms_list = NULL) {
 }
 
 
-#____________________________ Schéma & tables __________________________________
+#____________________________ Schéma & tables (POSTGRES) __________________________________
 DB_SCHEMA <- '"Jacob_data"'
 T_POLY    <- paste0(DB_SCHEMA, '.jardin_poly_4326')
 T_PNT     <- paste0(DB_SCHEMA, '.jardin_pnt_simple')             # (plus utilisé pour la carte intro)
@@ -199,7 +199,7 @@ T_TEXT    <- paste0(DB_SCHEMA, '.jardins_texte_url')
 T_LEX     <- paste0(DB_SCHEMA, '.jardin_lexique_lemma')
 T_COSIA   <- paste0(DB_SCHEMA, '.cosia_fr_par_jardin_wide')
 T_COM   <- paste0(DB_SCHEMA, '.commune_infos_poly_jardins')
-COMMUNE_KEY <- "CODGEO"  # colonne de jardin_infos qui contient le code commune (adapter si besoin)
+COMMUNE_KEY <- "CODGEO"  # colonne de jardin_infos qui contient le code commune
 T_REG  <- paste0(DB_SCHEMA,'.regions')
 GEOM_COL  <- "geom"
 
@@ -253,7 +253,7 @@ cosia_classes <- names(cosia_palette)
 cosia_cols    <- unname(unlist(cosia_palette))
 
 
-#  Fonction utilitaire (comme avant)
+#  Fonction utilitaire 
 ensure_cols <- function(df) {
   if (is.null(df)) return(df)
   if (!"occurrences" %in% names(df)) df$occurrences <- 0L
@@ -262,6 +262,9 @@ ensure_cols <- function(df) {
 }
 
 
+
+
+#________________________________________________________________________________________________________________________________________________________________
 #___________________________________________________________________________________ UI _________________________________________________________________________
 #________________________________________________________________________________________________________________________________________________________________
 
@@ -272,16 +275,15 @@ ui <- navbarPage(
     style = "display:flex; justify-content:center; align-items:center; width:100%;"
   ),
   
-  # garde ceci tel quel
   header = shinyjs::useShinyjs(),
   
-  # ton autre tags$style “Griser…”
+  # tags$style “Griser…”
   tags$style(HTML("
     #modgest .option-disabled label { opacity: 0.1; }
     #modgest .option-disabled { pointer-events: none; }
   ")),
   
-  # ⬇️ CSS global (responsive + z-index des modales)
+  # CSS global (responsive + z-index des modales)
   tags$head(
     tags$style(HTML("
       /* Responsive: panneau de recherche */
@@ -299,8 +301,7 @@ ui <- navbarPage(
     "))
   ),
 
-  
-  
+  ###
   
   # Onglet 1 : Introduction = WMS (3–11) puis Polygones (>= 12)
   tabPanel("Introduction",
@@ -309,7 +310,7 @@ ui <- navbarPage(
                width = 3,
                div(   # j'ai enfermé 'mode de gestion' et sous-ctgorie' dans une div 
                  id = "intro-filters",
-                 style = "margin-left:120px;",   # ← décale légèrement vers la droite
+                 style = "margin-left:120px;",   # décale légèrement vers la droite
                  # état du zoom
                  htmlOutput("zoom_hint_intro"),
                  checkboxGroupInput("modgest", "Mode de gestion",
@@ -346,14 +347,14 @@ ui <- navbarPage(
                     #  Barre de recherche flottante
                     absolutePanel(
                       id = "search_panel",
-                      top = 10, left = 200,               # ⇐ ancré à droite (plus de conflit avec la légende)
+                      top = 10, left = 200,               # ancré à droite (plus de conflit avec la légende)
                       width = NULL,                       # on laisse le CSS décider
                       draggable = TRUE,
                       style = paste(
-                        "z-index:2000;",                  # ⇐ au-dessus des contrôles Leaflet
-                        "max-width:clamp(220px, 28vw, 360px);",  # ⇐ largeur responsive
+                        "z-index:2000;",                  # au-dessus des contrôles Leaflet
+                        "max-width:clamp(220px, 28vw, 360px);",  # largeur responsive
                         "background:rgba(255,255,255,0.92);",
-                        "padding:0.6rem 0.75rem;",        # ⇐ rem au lieu de px
+                        "padding:0.6rem 0.75rem;",        # rem au lieu de px ? mieux ? 
                         "border-radius:10px;",
                         "box-shadow:0 2px 8px rgba(0,0,0,0.25);"
                       ),
@@ -369,11 +370,13 @@ ui <- navbarPage(
            dataTableOutput("table_intro")
   ),
   
+  ###
+  
   # Onglet 2 : Scraping
   tabPanel("Analyse Scraping",
            tabsetPanel(id = "scraping_tabs",
                        
-                       # ---- Sous-onglet 1 : Points (ton UI actuel inchangé) ----
+                       # Sous-onglet 1 : Cercles proportionnels
                        tabPanel("Cercles proportionnels",
                                 fluidRow(
                                   column(width = 3,
@@ -401,13 +404,12 @@ ui <- navbarPage(
                                 uiOutput("text_zone")
                        ),
                        
-                       # ---- Sous-onglet 2 : Régions (diffusion / intensité) ----
+                       # Sous-onglet 2 : Régions (diffusion / stock)
                        tabPanel("Régions (diffusion / stock)",
                                 sidebarLayout(
                                   sidebarPanel(
                                     textInput("kw_region", "Mot-clé", value = "moustique", placeholder = "ex. moustique"),
                                     
-                                    # ⬇️ ICI : on remplace ton ancien radioButtons("metric_region", ...)
                                     radioButtons(
                                       "metric_region", "Type de carte",
                                       choices = c(
@@ -418,7 +420,7 @@ ui <- navbarPage(
                                       inline   = FALSE
                                     ),
                                     
-                                    # tes contrôles de discrétisation restent (ils seront juste ignorés en mode cercles)
+                                    # contrôles de discrétisation restent (ils seront juste ignorés en mode cercles)
                                     conditionalPanel(
                                       condition = "input.metric_region != 'stock_circles'",
                                       selectInput(
@@ -449,8 +451,9 @@ ui <- navbarPage(
   ),
   
   
+  ###
   
-  # ONGLET n°3
+  # Onglet 3 : Analyse croisée
   tabPanel("Analyse croisée",
            fluidRow(
              column(
@@ -461,7 +464,7 @@ ui <- navbarPage(
                             style = "width:140px;"),
                br(), br(),
                
-               #  un seul sélecteur de mode global ----
+               #  un seul sélecteur de mode global
                selectInput(
                  "analysis_mode", "Mode d’analyse",
                  choices = c(
@@ -475,6 +478,7 @@ ui <- navbarPage(
                checkboxInput("show_global_compare",
                              "Afficher la comparaison globale (tous les jardins)",
                              value = TRUE),
+               
                # Niveau de détail des types de jardins
                conditionalPanel(
                  condition = "input.analysis_mode == 'type'",
@@ -495,7 +499,6 @@ ui <- navbarPage(
                    selected = "sum"
                  )
                ),
-               
                
                
                #  bloc 'Mode (par type)' 
@@ -557,127 +560,13 @@ ui <- navbarPage(
   )
 )
 
-#___________________________________________________________________________________ SERVER _________________________________________________________________________
+
+#________________________________________________________________________________________________________________________________________________________________
+#___________________________________________________________________________________ SERVER _____________________________________________________________________
 #________________________________________________________________________________________________________________________________________________________________
 
 server <- function(input, output, session) {
   
-  ################################################# GESTION DU MDP DANS L'ONGLET 2 ###########################################################################
-  search_keywords <- reactiveVal(character(0))
-  
-  
-  
-  # ---- Verrou d'accès aux textes
-  pending_garden_id <- reactiveVal(NULL)    # mémorise l'ID cliqué en attente du mot de passe
-  # mémoriser le mot utilisé - onglet 2
-  last_kw_region <- reactiveVal(NULL)  # mot-clé fixé au clic sur "Analyser" (onglet régions)
-  r_sf_reg       <- reactiveVal(NULL)   # sf des régions pour l'onglet
-  
-  
-  open_text_password_modal <- function() {
-    showModal(modalDialog(
-      title = "Accès restreint",
-      tagList(
-        p("Veuillez entrer le mot de passe pour afficher le texte :"),
-        passwordInput("pwd_input", label = NULL, placeholder = "Mot de passe"),
-        uiOutput("pwd_error_ui")  # ligne d’erreur si mauvais mot de passe
-      ),
-      footer = tagList(
-        modalButton("Annuler"),
-        actionButton("confirm_pwd", "Valider", class = "btn btn-primary")
-      ),
-      easyClose = FALSE
-    ))
-  }
-  output$pwd_error_ui <- renderUI({ NULL })
-  
-  # ---- Charge le texte d'un jardin et l'affiche dans text_zone
-  load_and_show_text <- function(gid) {
-    if (is.null(gid) || gid == "") return(invisible(NULL))
-    
-    # 1) Mots-clés saisis dans l'onglet (multi lemmes possibles)
-    w_raw <- trimws(input$search_word %||% "")
-    kws <- unlist(strsplit(w_raw, "[,;]"))
-    kws <- unique(tolower(trimws(kws)))
-    kws <- kws[nzchar(kws)]
-    
-    # 2) Connexion à la base
-    con <- connect_to_jacob()
-    on.exit(try(DBI::dbDisconnect(con), silent = TRUE), add = TRUE)
-    
-    # 3) Récupérer les textes pour CE jardin
-    sql_txt <- sprintf("
-    SELECT 
-      garden_id,
-      filename,
-      source_url,
-      texte_nettoye
-    FROM %s
-    WHERE garden_id = %s
-    ORDER BY filename, source_url;
-  ",
-                       T_TEXT,
-                       DBI::dbQuoteLiteral(con, gid)
-    )
-    
-    txt <- tryCatch(
-      DBI::dbGetQuery(con, sql_txt),
-      error = function(e) {
-        showNotification(
-          paste("Erreur SQL (textes) :", e$message),
-          type = "error"
-        )
-        data.frame()
-      }
-    )
-    
-    if (nrow(txt) == 0) {
-      r_selected_text(
-        sprintf("Aucun texte trouvé pour le jardin %s.", gid)
-      )
-      return(invisible(NULL))
-    }
-    
-    # 4) Préparer les formes pour CHAQUE lemme, si des mots ont été saisis
-    forms_list <- NULL
-    if (length(kws)) {
-      forms_list <- lapply(kws, function(lem) get_lemma_forms(lem, con))
-      names(forms_list) <- kws
-    } else {
-      kws <- character(0)
-    }
-    
-    # 5) Coloriser/surligner par fichier + mots-clés
-    html_text <- colorize_by_filename(
-      df_texts   = txt,
-      lemmas     = kws,
-      con        = con,
-      forms_list = forms_list
-    )
-    
-    # 6) Envoyer dans la zone de texte
-    r_selected_text(html_text)
-    showNotification(sprintf("✅ Texte chargé pour le jardin %s", gid), type = "message")
-    invisible(NULL)
-  }
-  
-  
-  observeEvent(input$confirm_pwd, {
-    req(input$pwd_input)
-    if (nzchar(TEXT_PWD) && identical(input$pwd_input, TEXT_PWD)) {
-      # pas de text_unlocked(TRUE) -> on reste "locké" pour la prochaine fois
-      gid <- isolate(pending_garden_id())
-      pending_garden_id(NULL)
-      removeModal()
-      if (!is.null(gid)) load_and_show_text(gid)
-    } else {
-      output$pwd_error_ui <- renderUI(
-        div(style="color:#c62828;margin-top:6px;", "Mot de passe incorrect.")
-      )
-    }
-  })
-  
-  ################################################## GESTION DU MDP DANS L'ONGLET 2 ###########################################################################
   
   ################################################## ONGLET 1 : INTRODUCTION ###########################################################################
   
@@ -1233,16 +1122,131 @@ server <- function(input, output, session) {
   
   ###################################################################################### ONGLET N °2 SCRAPING : ################################################################ 
   
+  ############################################################################# SOUS ONGLET N°1 : CERCLES PROPORTIONNEL ########################################################
+  
+  # en ce qui concerne le mot de passe 
+  
+  search_keywords <- reactiveVal(character(0))
+  
+  # Verrou d'accès aux textes
+  pending_garden_id <- reactiveVal(NULL)    # mémorise l'ID cliqué en attente du mot de passe
+  # mémoriser le mot utilisé - onglet 2
+  last_kw_region <- reactiveVal(NULL)  # mot-clé fixé au clic sur "Analyser" (onglet régions)
+  r_sf_reg       <- reactiveVal(NULL)   # sf des régions pour l'onglet
+  
+  
+  open_text_password_modal <- function() {
+    showModal(modalDialog(
+      title = "Accès restreint",
+      tagList(
+        p("Veuillez entrer le mot de passe pour afficher le texte :"),
+        passwordInput("pwd_input", label = NULL, placeholder = "Mot de passe"),
+        uiOutput("pwd_error_ui")  # ligne d’erreur si mauvais mot de passe (mdp)... oupssSS ahah
+      ),
+      footer = tagList(
+        modalButton("Annuler"),
+        actionButton("confirm_pwd", "Valider", class = "btn btn-primary")
+      ),
+      easyClose = FALSE
+    ))
+  }
+  output$pwd_error_ui <- renderUI({ NULL })
+  
+  # Charge le texte d'un jardin et l'affiche dans text_zone
+  load_and_show_text <- function(gid) {
+    if (is.null(gid) || gid == "") return(invisible(NULL))
+    
+    # 1) Mots-clés saisis dans l'onglet (multi lemmes possibles, trop trop bien) -> faire des familles de mots 
+    w_raw <- trimws(input$search_word %||% "")
+    kws <- unlist(strsplit(w_raw, "[,;]"))
+    kws <- unique(tolower(trimws(kws)))
+    kws <- kws[nzchar(kws)]
+    
+    # 2) Connexion à la base
+    con <- connect_to_jacob()
+    on.exit(try(DBI::dbDisconnect(con), silent = TRUE), add = TRUE)
+    
+    # 3) Récupérer les textes pour CE jardin
+    sql_txt <- sprintf("
+    SELECT 
+      garden_id,
+      filename,
+      source_url,
+      texte_nettoye
+    FROM %s
+    WHERE garden_id = %s
+    ORDER BY filename, source_url;
+  ",
+                       T_TEXT,
+                       DBI::dbQuoteLiteral(con, gid)
+    )
+    
+    txt <- tryCatch(
+      DBI::dbGetQuery(con, sql_txt),
+      error = function(e) {
+        showNotification(
+          paste("Erreur SQL (textes) :", e$message),
+          type = "error"
+        )
+        data.frame()
+      }
+    )
+    
+    if (nrow(txt) == 0) {
+      r_selected_text(
+        sprintf("Aucun texte trouvé pour le jardin %s.", gid)
+      )
+      return(invisible(NULL))
+    }
+    
+    # 4) Préparer les formes pour CHAQUE lemme, si des mots ont été saisis
+    forms_list <- NULL
+    if (length(kws)) {
+      forms_list <- lapply(kws, function(lem) get_lemma_forms(lem, con))
+      names(forms_list) <- kws
+    } else {
+      kws <- character(0)
+    }
+    
+    # 5) Coloriser/surligner par fichier + mots-clés
+    html_text <- colorize_by_filename(
+      df_texts   = txt,
+      lemmas     = kws,
+      con        = con,
+      forms_list = forms_list
+    )
+    
+    # 6) Envoyer dans la zone de texte
+    r_selected_text(html_text)
+    showNotification(sprintf("✅ Texte chargé pour le jardin %s", gid), type = "message")
+    invisible(NULL)
+  }
+  
+  
+  observeEvent(input$confirm_pwd, {
+    req(input$pwd_input)
+    if (nzchar(TEXT_PWD) && identical(input$pwd_input, TEXT_PWD)) {
+      # pas de text_unlocked(TRUE) -> on reste "locké" pour la prochaine fois
+      gid <- isolate(pending_garden_id())
+      pending_garden_id(NULL)
+      removeModal()
+      if (!is.null(gid)) load_and_show_text(gid)
+    } else {
+      output$pwd_error_ui <- renderUI(
+        div(style="color:#c62828;margin-top:6px;", "Mot de passe incorrect.")
+      )
+    }
+  })
+  
 
-  # ============================================================
-  # RÉCUPÉRATION MULTI-MOTS POUR L’ONGLET "CERCLÉS"
-  # ============================================================
+
+  # RÉCUPÉRATION MULTI-MOTS POUR L’ONGLET "CERCLES"
   
   r_get_jacob_word <- eventReactive(input$do_search, {
     w_raw <- trimws(input$search_word %||% "")
     if (w_raw == "") return(empty_sf_4326())
     
-    # --- Séparer les mots par virgule / point-virgule ---
+    # Séparer les mots par virgule / point-virgule
     kws <- unlist(strsplit(w_raw, "[,;]"))
     kws <- unique(tolower(trimws(kws)))
     kws <- kws[nzchar(kws)]
@@ -1259,13 +1263,12 @@ server <- function(input, output, session) {
     
     con <- connect_to_jacob()
     
-    # --- Construction de la clause IN('rat','moustique',...) SANS trucs chelous ---
+    # Construction de la clause IN('rat','moustique',...) SANS trucs chelous
     kw_sql_vec   <- sprintf("'%s'", sql_escape(kws))
     kw_in_clause <- paste(kw_sql_vec, collapse = ", ")
     
-    # -------------------------------------------------------------------
+    
     # 1) RÉCUPÉRER OCCURRENCES PAR (jardin, lemme)
-    # -------------------------------------------------------------------
     sql_metrics <- sprintf("
   SELECT 
     s.garden_id::text             AS garden_id,
@@ -1274,7 +1277,7 @@ server <- function(input, output, session) {
     MAX(s.spec)::double precision AS spec
   FROM %s s
   WHERE lower(trim(s.lemma)) IN (%s)
-    AND s.n > 0                         -- 🔴 NE GARDER QUE LES LIGNES AVEC AU MOINS 1 OCCURRENCE
+    AND s.n > 0                         -- NE GARDER QUE LES LIGNES AVEC AU MOINS 1 OCCURRENCE
   GROUP BY s.garden_id, lower(trim(s.lemma))
 ", T_SPEC, kw_in_clause)
     
@@ -1287,10 +1290,9 @@ server <- function(input, output, session) {
     }
     
     
-    # -------------------------------------------------------------------
+    
     # 2) AGRÉGER PAR JARDIN
-    # -------------------------------------------------------------------
-    # 🔒 Sécurité : on enlève les lemmes qui ont 0 occurrence dans ce jardin
+    # Sécurité : on enlève les lemmes qui ont 0 occurrence dans ce jardin
     agg_data <- agg_data %>%
       dplyr::filter(!is.na(occurrences) & occurrences > 0)
     
@@ -1317,9 +1319,8 @@ server <- function(input, output, session) {
       return(empty_sf_4326())
     }
     
-    # -------------------------------------------------------------------
+    
     # 3) PALETTE : UNE COULEUR PAR MOT + ROUGE SI MULTI-MOTS
-    # -------------------------------------------------------------------
     base_cols <- c(
       "#1f77b4", "#ff7f0e", "#2ca02c", "#9467bd",
       "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"
@@ -1333,14 +1334,14 @@ server <- function(input, output, session) {
         primary_color = ifelse(is.na(primary_color), "#888888", primary_color),
         highlight     = dplyr::if_else(
           n_terms >= 2,
-          "#e41a1c",         # 🔴 plusieurs mots-clés dans ce jardin
-          primary_color      # 🎨 sinon couleur du mot dominant
+          "#e41a1c",         # plusieurs mots-clés dans ce jardin
+          primary_color
         )
       )
     
-    # -------------------------------------------------------------------
+    
     # 4) RÉCUPÉRER LES COORDONNÉES
-    # -------------------------------------------------------------------
+    
     gids_sql <- paste(
       sprintf("'%s'", sql_escape(as.character(agg_garden$garden_id))),
       collapse = ","
@@ -1370,9 +1371,9 @@ server <- function(input, output, session) {
       return(empty_sf_4326())
     }
     
-    # -------------------------------------------------------------------
+    
     # 5) ASSEMBLER LE SF FINAL
-    # -------------------------------------------------------------------
+    
     out <- dplyr::left_join(
       geom_data,
       agg_garden,
@@ -1389,21 +1390,19 @@ server <- function(input, output, session) {
   
   
   
-  
-  
   #  Quand on lance une nouvelle recherche, on vide le texte sélectionné dans text_zone
   observeEvent(input$do_search, {
     r_selected_text(NULL)   # remet la zone de texte à vide
   })
   
   
-  # --- Spinner OFF quand tout est prêt ---
+  #  Spinner OFF quand tout est prêt 
   observeEvent(r_get_jacob_word(), {
     shinyjs::delay(800, remove_modal_spinner())
   })
   
   
-  # ---- Texte résumé résultats ----
+  #  Texte résumé résultats 
   output$nb_jardins_concernes <- renderText({
     data <- r_get_jacob_word()
     if (is.null(data) || nrow(data) == 0) return("Aucun résultat pour ce terme.")
@@ -1415,7 +1414,7 @@ server <- function(input, output, session) {
   })
   
   
-  # ---- Carte ----
+  #  Carte 
   output$map_scraping <- renderLeaflet({
     leaflet() %>% addProviderTiles("CartoDB.Positron", options = providerTileOptions(opacity = 0.4)) %>%
       setView(lng = 2.35, lat = 46.7, zoom = 5)
@@ -1447,7 +1446,7 @@ server <- function(input, output, session) {
     bb <- sf::st_bbox(filtered_data)
     proxy_map %>% fitBounds(lng1 = bb$xmin, lat1 = bb$ymin, lng2 = bb$xmax, lat2 = bb$ymax)
     
-    # 🔵🟣🟢 Cercles colorés + rouge si plusieurs lemmes
+    #  Cercles colorés + rouge si plusieurs lemmes
     proxy_map %>% addCircleMarkers(
       data = filtered_data,
       lng = ~lng, lat = ~lat,
@@ -1464,7 +1463,7 @@ server <- function(input, output, session) {
       )
     )
     
-    # 🧾 LÉGENDE : 1 couleur par lemme + rouge = plusieurs lemmes
+    # LÉGENDE : 1 couleur par lemme + rouge = plusieurs lemmes
     kws <- search_keywords()
     kws <- kws[nzchar(kws)]
     if (length(kws)) {
@@ -1516,10 +1515,10 @@ server <- function(input, output, session) {
   
   
   
-  # --- Valeur réactive : texte du jardin sélectionné ---
+  #  Valeur réactive : texte du jardin sélectionné 
   r_selected_text <- reactiveVal(NULL)
   
-  # --- Table principale sans les textes au départ ---
+  # Table principale sans les textes au départ
   output$table_scraping <- renderDataTable({
     data <- r_get_jacob_word()
     if (is.null(data) || nrow(data) == 0) return(data.frame())
@@ -1531,7 +1530,7 @@ server <- function(input, output, session) {
     datatable(
       df,
       selection = "single",
-      rownames = FALSE,   # ✅ ici, pas dans options
+      rownames = FALSE,   # ici, pas dans options
       options = list(
         pageLength = 10,
         scrollX = TRUE
@@ -1539,8 +1538,7 @@ server <- function(input, output, session) {
     )
   })
   
-  # --- Quand on clique une ligne, on demande le mot de passe si nécessaire, puis on charge le texte ---
-  # --- À chaque clic de ligne : demander systématiquement le mot de passe
+  # Quand on clique une ligne, on demande le mot de passe si nécessaire, puis on charge le texte
   observeEvent(input$table_scraping_rows_selected, {
     sel  <- input$table_scraping_rows_selected
     data <- r_get_jacob_word()
@@ -1555,7 +1553,7 @@ server <- function(input, output, session) {
   
   
   
-  # --- Zone d'affichage du texte sélectionné ---
+  #  Zone d'affichage du texte sélectionné
   output$text_zone <- renderUI({
     txt <- r_selected_text()
     if (is.null(txt) || !nzchar(txt)) return(NULL)
@@ -1567,7 +1565,7 @@ server <- function(input, output, session) {
     )
   })
   
-  # ---- Bouton pour charger les textes (inchangé) ----
+  #  Bouton pour charger les textes (inchangé)
   observeEvent(input$load_texts, {
     data_base <- r_get_jacob_word()
     if (is.null(data_base) || nrow(data_base) == 0) {
@@ -1633,7 +1631,8 @@ server <- function(input, output, session) {
     showNotification(sprintf("✅ Textes ajoutés pour %d jardins.", nrow(texts)), type = "message")
   })
   
-                                                              #################### SOUS ONGLET DE L'ONGLET N°2 ####################
+  
+  ############################################################################# SOUS ONGLET N°2 : DIFFUSION / STOCK ########################################################
   
   .render_regions_view <- function(sf_reg, met) {
     # Sécurité
@@ -1664,9 +1663,8 @@ server <- function(input, output, session) {
       "part des jardins de la région où le mot apparaît au moins une fois"
     }
     
-    # ============================
+    
     # MODE : STOCK BRUT (CERCLÉS)
-    # ============================
     if (met == "stock_circles") {
       vals_stock <- sf_reg$total_occ_kw
       vals_pos   <- vals_stock[vals_stock > 0 & is.finite(vals_stock)]
@@ -1788,9 +1786,8 @@ server <- function(input, output, session) {
       return(invisible(NULL))
     }
     
-    # ============================
+    
     # MODE : DIFFUSION (%) – CHOROPLÈTHE
-    # ============================
     
     # métrique cartographiée
     sf_reg$metric_value <- sf_reg$diffusion_pct
@@ -1891,7 +1888,7 @@ server <- function(input, output, session) {
     }, silent = TRUE)
   }
   
-  # ---------- Carte par région : requête SQL au clic sur "Analyser" ----------
+  # Carte par région : requête SQL au clic sur "Analyser"
   observeEvent(input$run_regions, {
     req(input$kw_region, input$metric_region)
     
@@ -1956,7 +1953,7 @@ server <- function(input, output, session) {
     .render_regions_view(sf_reg, met)
   })
   
-  # ---------- Changement de mode (radio bouton) : on ne relance pas la requête ----------
+  # Changement de mode (radio bouton) : on ne relance pas la requête
   observeEvent(input$metric_region, {
     sf_reg <- r_sf_reg()
     if (is.null(sf_reg) || nrow(sf_reg) == 0) return()
@@ -1966,7 +1963,8 @@ server <- function(input, output, session) {
   }, ignoreInit = TRUE)
   
   
-  #   ###################################################################################### ONGLET 3 : Analyse croisée ################################################################ 
+  #   ###################################################################################### ONGLET N°3 : ANALYSE CROISEE ################################################################ 
+  
   # Pré-remplir le mot-clé depuis l’onglet 2 si dispo
   observeEvent(input$search_word, {
     if (nzchar(input$search_word) && !nzchar(input$word_bytype)) {
@@ -1974,7 +1972,7 @@ server <- function(input, output, session) {
     }
   }, ignoreInit = TRUE)
   
-  # ---- Requête principale + agrégations ----
+  #  Requête principale + agrégations 
   r_bytype <- eventReactive(input$run_bytype, {
     w <- trimws(input$word_bytype %||% "")
     if (!nzchar(w)) return(NULL)
@@ -2051,7 +2049,7 @@ server <- function(input, output, session) {
         niveau_vie_median = suppressWarnings(as.numeric(niveau_vie_median))
       )
     
-    ## ---- Agrégations par type ----
+    ## Agrégations par type
     agg_grand <- df %>%
       dplyr::group_by(grand_type) %>%
       dplyr::summarise(
@@ -2078,7 +2076,7 @@ server <- function(input, output, session) {
       ) %>%
       dplyr::mutate(label_aff = sous_type)
     
-    ## ---- Agrégations par densité communale ----
+    ## Agrégations par densité communale
     agg_dens <- df %>%
       dplyr::filter(!is.na(libdens7) & libdens7 != "") %>%
       dplyr::group_by(libdens7) %>%
@@ -2093,7 +2091,7 @@ server <- function(input, output, session) {
       ) %>%
       dplyr::mutate(label_aff = libdens7)
     
-    ## ---- Agrégations par type de sol (CoSIA) pour les jardins "positifs" ----
+    ## Agrégations par type de sol (CoSIA) pour les jardins "positifs"
     ids_pos <- df %>% dplyr::filter(occ > 0) %>% dplyr::pull(id)
     agg_sol <- NULL
     if (length(ids_pos)) {
@@ -2147,9 +2145,9 @@ server <- function(input, output, session) {
     # dat = list(...) renvoyé par r_bytype ; mode ∈ {"type","dens","sol"}
     stopifnot(is.list(dat), !is.null(mode))
     
-    # ======================
+    
     # 1) PAR TYPE DE JARDIN
-    # ======================
+    
     if (mode == "type") {
       if (agg_level == "sous") {
         # Tous les sous-types (jardin partagé générique, de rue, etc. + familial + à classer)
@@ -2181,9 +2179,9 @@ server <- function(input, output, session) {
       ))
     }
     
-    # ======================
+    
     # 2) PAR DENSITÉ COMMUNALE
-    # ======================
+    
     if (mode == "dens") {
       d <- dat$points %>%
         dplyr::filter(!is.na(libdens7) & libdens7 != "") %>%
@@ -2202,9 +2200,9 @@ server <- function(input, output, session) {
       ))
     }
     
-    # ======================
+    
     # 3) PAR TYPE DE SOL (CoSIA)
-    # ======================
+    
     if (mode == "sol") {
       # Part des types de sol sur l’ensemble des jardins
       ids_all <- unique(dat$points$id)
@@ -2283,13 +2281,12 @@ server <- function(input, output, session) {
     stats::glm(stats::as.formula(paste0("pres ~ `", x_col, "`")), data = pts, family = stats::binomial())
   }
   
-  #########################################
   
   output$plots_bytype <- renderUI({
     dat  <- r_bytype(); if (is.null(dat)) return(NULL)
     mode <- input$analysis_mode %||% "type"
     
-    # Corrélation/logistique : 1 seul graphe (le tien)
+    # Corrélation/logistique : 1 seul graphe
     if (mode == "corr") {
       return(div(style="display:flex; gap:16px; align-items:stretch;",
                  div(style="flex:1;", plotOutput("plot_bytype_main", height = "440px"))))
@@ -2309,13 +2306,13 @@ server <- function(input, output, session) {
   })
   
   
-  # ---- Plot principal (régression logistique) ----
+  #  Plot principal (régression logistique)
   output$plot_bytype_main <- renderPlot({
     dat  <- r_bytype(); if (is.null(dat)) return(NULL)
     mode <- input$analysis_mode %||% "type"   # "type" | "dens" | "corr" | "sol"
     w <- dat$keyword %||% "mot"
     
-    ## === 1) régression logistique : X = occ, Y = surface/pauvreté/niveau de vie ===
+    # 1) régression logistique : X = occ, Y = surface/pauvreté/niveau de vie
     if (mode == "corr") {
       pts <- dat$points  # on prend TOUS les jardins (présence/absence)
       
@@ -2372,7 +2369,7 @@ server <- function(input, output, session) {
     
     
     
-    ## === 2) Par type / Par densité ===
+    # 2) Par type / Par densité
     if (mode %in% c("type", "dens")) {
       d <- if (mode == "type") {
         if (identical(input$agg_level, "grand")) dat$grand else dat$sous
@@ -2399,7 +2396,7 @@ server <- function(input, output, session) {
           sprintf("Occurrences totales de « %s » (par type de jardin)", w)
       }
       
-      # 🔁 Récupère l’ordre global (tous les jardins) comme référence
+      # Récupère l’ordre global (tous les jardins) comme référence
       glob <- .make_global_agg(
         dat,
         mode,
@@ -2427,12 +2424,12 @@ server <- function(input, output, session) {
       )
     }
     
-    ## === 3) Par type de sol (CoSIA) ===
+    # 3) Par type de sol (CoSIA)
     if (mode == "sol") {
       d <- dat$sols
       if (is.null(d) || !nrow(d)) return(NULL)
       
-      # 🔁 Ordre global par type de sol (tous les jardins)
+      # Ordre global par type de sol (tous les jardins)
       con_glob <- connect_to_jacob()
       on.exit(try(DBI::dbDisconnect(con_glob), silent = TRUE), add = TRUE)
       glob <- .make_global_agg(
@@ -2492,7 +2489,7 @@ server <- function(input, output, session) {
     ylab <- glob$ylab
     title_suffix <- glob$title_suffix
     
-    # 🔁 C’est ici qu’on définit l’ordre de référence
+    # C’est ici qu’on définit l’ordre de référence
     ord <- d %>%
       dplyr::arrange(dplyr::desc(.data[[ycol]])) %>%
       dplyr::pull(label_aff)
@@ -2524,7 +2521,7 @@ server <- function(input, output, session) {
   
   
   
-  # ---- Box de régression logistique ----
+  # Box de régression logistique
   output$corr_box <- renderUI({
     req(input$analysis_mode == "corr")
     dat <- r_bytype(); req(dat)
@@ -2587,7 +2584,7 @@ server <- function(input, output, session) {
     ))
   })
   
-  # ---- Note explicative sous le graphe ----
+  #  Note explicative sous le graphe 
   output$bytype_note <- renderUI({
     dat <- r_bytype(); if (is.null(dat)) return(NULL)
     mode <- input$analysis_mode %||% "type"
@@ -2610,7 +2607,7 @@ server <- function(input, output, session) {
   })
   
   
-  # ---- Médianes (pour type & dens) ----
+  # Médianes (pour type & dens)
   output$plot_bytype_median <- renderPlot({
     req(input$analysis_mode %in% c("type","dens"), input$show_median)
     dat <- r_bytype(); if (is.null(dat)) return(NULL)
@@ -2638,7 +2635,7 @@ server <- function(input, output, session) {
       theme_minimal(base_size = 13)
   })
   
-  # ---- Tableau + téléchargement ----
+  # Tableau + téléchargement
   output$table_bytype <- renderDataTable({
     dat  <- r_bytype(); if (is.null(dat)) return(data.frame())
     mode <- input$analysis_mode %||% "type"
@@ -2722,6 +2719,8 @@ server <- function(input, output, session) {
 }
 
 #________________________________________________________________________________________________________________________________________________________________
-#___________________________________________________________________________________ CONNECTION _________________________________________________________________________
+#___________________________________________________________________________________ CONNECTION _________________________________________________________________
+#________________________________________________________________________________________________________________________________________________________________
+
 
 shinyApp(ui = ui, server = server)
