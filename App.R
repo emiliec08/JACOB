@@ -19,10 +19,12 @@ library(classInt)
 library(tidyr)
 library(shinycssloaders) # pour le spinner de chargmt (onglet 2)
 library(shinybusy)
+library(htmltools)
+
 #____________________________ sources __________________________________________
 source("R/format_table.R")
 source("R/connect_to_jacob.R")   # connexion Postgres
-
+source("R/smart_capitalize.R")   # fonction mettre en minuscule le texte
 #____________________ gestion du mot de passe __________________________________
 
 # --- Mot de passe pour afficher le texte (depuis .Renviron| à faire dans l'ordi ?)
@@ -459,7 +461,7 @@ ui <- navbarPage(
              column(
                width = 3,
                h4("Analyse"),
-               textInput("word_bytype", "Mot-clé (lemma) :", value = "", placeholder = "ex : moustique"),
+               textInput("word_bytype", "Mot-clé (lemma) :", value = "", placeholder = "ex : moustique, eau, biodiversité"),
                actionButton("run_bytype", "Analyser", icon = icon("chart-column"),
                             style = "width:140px;"),
                br(), br(),
@@ -1123,6 +1125,10 @@ server <- function(input, output, session) {
   ###################################################################################### ONGLET N °2 SCRAPING : ################################################################ 
   
   ############################################################################# SOUS ONGLET N°1 : CERCLES PROPORTIONNEL ########################################################
+ 
+  
+  
+  
   
   # en ce qui concerne le mot de passe 
   
@@ -1168,18 +1174,17 @@ server <- function(input, output, session) {
     
     # 3) Récupérer les textes pour CE jardin
     sql_txt <- sprintf("
-    SELECT 
-      garden_id,
-      filename,
-      source_url,
-      texte_nettoye
-    FROM %s
-    WHERE garden_id = %s
-    ORDER BY filename, source_url;
-  ",
+  SELECT 
+    garden_id,
+    filename,
+    source_url,
+    lower(texte_nettoye) AS texte_nettoye
+  FROM %s
+  WHERE garden_id = %s
+  ORDER BY filename, source_url;
+",
                        T_TEXT,
-                       DBI::dbQuoteLiteral(con, gid)
-    )
+                       DBI::dbQuoteLiteral(con, gid))
     
     txt <- tryCatch(
       DBI::dbGetQuery(con, sql_txt),
@@ -1209,12 +1214,25 @@ server <- function(input, output, session) {
     }
     
     # 5) Coloriser/surligner par fichier + mots-clés
+    # texte brut
+    # --- Sécurisation du texte avant transformation ---
+    txt$texte_nettoye <- as.character(txt$texte_nettoye)
+    txt$texte_nettoye[is.na(txt$texte_nettoye)] <- ""
+    
+    # --- Transformation phrase-par-phrase ---
+    txt$texte_nettoye <- smart_capitalize(txt$texte_nettoye)
+    
+    
+    
+    
+    # puis coloration
     html_text <- colorize_by_filename(
       df_texts   = txt,
       lemmas     = kws,
       con        = con,
       forms_list = forms_list
     )
+    
     
     # 6) Envoyer dans la zone de texte
     r_selected_text(html_text)
@@ -1974,18 +1992,28 @@ server <- function(input, output, session) {
   
   #  Requête principale + agrégations 
   r_bytype <- eventReactive(input$run_bytype, {
-    w <- trimws(input$word_bytype %||% "")
-    if (!nzchar(w)) return(NULL)
+    w_raw <- trimws(input$word_bytype %||% "")
+    if (!nzchar(w_raw)) return(NULL)
     
+    # 🧩 Étape 1 — découper les mots (virgule, espace, point-virgule)
+    # Découper seulement sur les virgules ou points-virgules, pas sur les espaces
+    words <- unique(strsplit(w_raw, "\\s*,\\s*|\\s*;\\s*")[[1]])
+    words <- words[nzchar(words)]  # supprimer les vides
+    if (length(words) == 0) return(NULL)
+    
+    # 🧩 Étape 2 — préparer la liste SQL ('mot1','mot2','mot3')
+    words_sql <- paste0("'", tolower(words), "'", collapse = ", ")
+    
+    # 🧩 Étape 3 — connexion
     con <- connect_to_jacob()
     on.exit(try(DBI::dbDisconnect(con), silent = TRUE), add = TRUE)
     
-    # Occurrences par jardin pour le lemme
+    # 🧩 Étape 4 — requête SQL
     sql_occ <- sprintf("
     WITH occ AS (
       SELECT (s.garden_id)::text AS id, SUM(s.n)::bigint AS occ
       FROM %s s
-      WHERE LOWER(TRIM(s.lemma)) = LOWER(TRIM(?word))
+      WHERE LOWER(TRIM(s.lemma)) = ANY(ARRAY[%s])
       GROUP BY (s.garden_id)::text
     ),
     infos AS (
@@ -1997,8 +2025,8 @@ server <- function(input, output, session) {
         (c.\"CODGEO\")::text    AS codgeo,
         c.\"LIBDENS7\"          AS libdens7,
         c.\"DENS7\"             AS dens7,
-        c.\"TP6021\"     AS taux_pauvrete,
-        c.\"Q221\" AS niveau_vie_median,
+        c.\"TP6021\"            AS taux_pauvrete,
+        c.\"Q221\"              AS niveau_vie_median,
         CASE
           WHEN i.classe_mot IN ('JARDIN PÉDAGOGIQUE','JARDIN DE RUE',
                                 'JARDIN D''INSERTION','FERME URBAINE',
@@ -2035,12 +2063,13 @@ server <- function(input, output, session) {
       inf.niveau_vie_median,
       COALESCE(o.occ, 0) AS occ
     FROM infos inf
-    LEFT JOIN occ o ON o.id = inf.id
-  ", T_SPEC, T_INFOS, T_COM)
+    LEFT JOIN occ o ON o.id = inf.id;
+  ", T_SPEC, words_sql, T_INFOS, T_COM)
     
-    df <- DBI::dbGetQuery(con, DBI::sqlInterpolate(con, sql_occ, word = w))
+    df <- DBI::dbGetQuery(con, sql_occ)
     if (is.null(df) || !nrow(df)) return(NULL)
     
+    # suite de ton code inchangée 👇
     df <- df %>%
       dplyr::mutate(
         occ               = as.numeric(occ),
@@ -2134,7 +2163,7 @@ server <- function(input, output, session) {
       dens   = agg_dens,
       sols   = agg_sol,
       points = df,
-      keyword = w 
+      keyword = paste(words, collapse = ", ")
     )
   }, ignoreInit = TRUE)
   
