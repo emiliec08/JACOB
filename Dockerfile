@@ -18,6 +18,10 @@ RUN Rscript -e 'install.packages("shinyjs")'
 RUN Rscript -e 'install.packages("stringr")'
 RUN Rscript -e 'install.packages("RPostgres")'
 RUN Rscript -e 'install.packages("glue")'
+RUN Rscript -e 'install.packages("purrr")'
+RUN Rscript -e 'install.packages("plotly")'
+RUN Rscript -e 'install.packages("shinycssloaders")'
+RUN Rscript -e 'install.packages("shinybusy")'
 
 RUN mkdir /app
 ADD . /app
