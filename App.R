@@ -1431,7 +1431,11 @@ server <- function(input, output, session) {
   
   #  Carte 
   output$map_scraping <- renderLeaflet({
-    leaflet() %>% addProviderTiles("CartoDB.Positron", options = providerTileOptions(opacity = 0.4)) %>%
+    leaflet() %>%
+    leaflet::addTiles(paste0("https://basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}.png?key=",
+                             Sys.getenv("CartoDB_API_key")),
+                      attribution = '© <a href="https://carto.com/attributions">CartoDB</a>') |>
+      
       setView(lng = 2.35, lat = 46.7, zoom = 5)
   })
   
