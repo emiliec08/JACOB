@@ -1694,7 +1694,9 @@ server <- function(input, output, session) {
       if (!length(vals_pos)) {
         output$map_region <- leaflet::renderLeaflet({
           leaflet::leaflet() |>
-            leaflet::addProviderTiles(leaflet::providers$CartoDB.Positron)
+                 leaflet::addTiles(paste0("https://basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}.png?key=",
+                             Sys.getenv("CartoDB_API_key")),
+                      attribution = '© <a href="https://carto.com/attributions">CartoDB</a>') 
         })
         output$phrase_region <- renderUI(
           htmltools::HTML("ℹ️ Aucune occurrence trouvée pour ce mot.")
