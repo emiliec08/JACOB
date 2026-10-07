@@ -1,4 +1,4 @@
-0.# -- Application Shiny : Onglets avec cartes, histogramme et légende dynamique
+# -- Application Shiny : Onglets avec cartes, histogramme et légende dynamique
 options("shiny.port" = 3841, "shiny.host" = "0.0.0.0", "golem.app.prod" = TRUE)
 
 #____________________________ library __________________________________________ 
@@ -1658,7 +1658,10 @@ server <- function(input, output, session) {
     if (is.null(sf_reg) || nrow(sf_reg) == 0) {
       output$map_region <- leaflet::renderLeaflet({
         leaflet::leaflet() |>
-          leaflet::addProviderTiles(leaflet::providers$CartoDB.Positron)
+          leaflet::addTiles(paste0("https://basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}.png?key=",
+                             Sys.getenv("CartoDB_API_key")),
+                      attribution = '© <a href="https://carto.com/attributions">CartoDB</a>')
+      
       })
       output$phrase_region <- renderUI(
         htmltools::HTML("ℹ️ Aucune région avec une valeur calculable pour ce mot.")
