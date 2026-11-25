@@ -28,7 +28,7 @@ source("R/smart_capitalize.R")   # fonction mettre en minuscule le texte
 #____________________ gestion du mot de passe __________________________________
 
 # --- Mot de passe pour afficher le texte (depuis .Renviron| à faire dans l'ordi ?)
-TEXT_PWD <- Sys.getenv("SCRAPING_TEXT_PASSWORD", unset = "")
+TEXT_PWD <- Sys.getenv("SCRAPING_TEXT_PASSWORD")
 
 #_______________________________ wms (GEOSERVER) ___________________________________________ 
 WMS_BASE   <- "https://geoserver.ens-lyon.fr/geoserver/jacob/wms"
@@ -876,8 +876,8 @@ server <- function(input, output, session) {
       else
         HTML("<div style='color:#9e9e9e;margin-bottom:6px;'>🔒 Zoomez pour utiliser les filtres. (≥ 12) </div>")
     })
-    if (z >= 12) { shinyjs::enable("modgest"); shinyjs::enable("sub_filter_classes_intro") }
-    else         { shinyjs::disable("modgest"); shinyjs::disable("sub_filter_classes_intro") }
+    #if (z >= 12) { shinyjs::enable("modgest"); shinyjs::enable("sub_filter_classes_intro") }
+    #else         { shinyjs::disable("modgest"); shinyjs::disable("sub_filter_classes_intro") }
     
     proxy_map %>% clearControls()
     
