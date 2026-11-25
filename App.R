@@ -1751,7 +1751,9 @@ server <- function(input, output, session) {
       # Carte : polygones neutres + cercles
       output$map_region <- leaflet::renderLeaflet({
         leaflet::leaflet(sf_reg) |>
-          leaflet::addProviderTiles(leaflet::providers$CartoDB.Positron) |>
+          leaflet::addTiles(paste0("https://basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}.png?key=",
+                                   Sys.getenv("CartoDB_API_key")),
+                            attribution = '© <a href="https://carto.com/attributions">CartoDB</a>') |> 
           leaflet::addPolygons(
             weight      = 0.8,
             color       = "#777777",
@@ -1861,7 +1863,9 @@ server <- function(input, output, session) {
     # Carte choroplèthe
     output$map_region <- leaflet::renderLeaflet({
       leaflet::leaflet(sf_reg) |>
-        leaflet::addProviderTiles(leaflet::providers$CartoDB.Positron) |>
+        leaflet::addTiles(paste0("https://basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}.png?key=",
+                                 Sys.getenv("CartoDB_API_key")),
+                          attribution = '© <a href="https://carto.com/attributions">CartoDB</a>') |> 
         leaflet::addPolygons(
           weight      = 0.9,
           color       = "#666666",
